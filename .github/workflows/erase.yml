@@ -1,0 +1,61 @@
+# One erase job: worker/run_job.py on a job record (input = its record id; everything else comes from the record and the
+# spec it points to, read with the repository secrets). Started by the caller's automation through the API
+# (workflow_dispatch needs a token with Actions: write on this repository, so nobody else can start it).
+#
+# This repository is public, and so are its Actions logs. Rules that keep the jobs private:
+# - inputs are ids only (they show in the run name and in the step env header);
+# - the worker prints step names, counts and timings only; engine output stays in a file on the runner;
+# - no artifacts (anyone could download them): the result is uploaded to the caller's hosting with a secret;
+# - no pull_request / pull_request_target triggers, so a fork can never run a workflow with these secrets.
+name: erase
+run-name: erase ${{ inputs.job }}
+on:
+  workflow_dispatch:
+    inputs:
+      job:
+        description: job record id (rec…)
+        required: true
+      base:
+        description: base id (app…)
+        required: true
+      table:
+        description: table id (tbl…)
+        required: true
+permissions:
+  contents: read
+concurrency:
+  group: erase-${{ inputs.job }}
+  cancel-in-progress: false
+jobs:
+  erase:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+          cache: pip
+      - name: tools
+        run: |
+          command -v ffmpeg >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends ffmpeg >/dev/null; }
+          pip install -q -r requirements.txt
+          echo "cores: $(nproc)"
+      - name: secrets present
+        env:
+          AIRTABLE_TOKEN: ${{ secrets.AIRTABLE_TOKEN }}
+          CREATOMATE_API_KEY: ${{ secrets.CREATOMATE }}
+          FAL_KEY: ${{ secrets.FAL_KEY }}
+        run: |
+          miss=""; for k in AIRTABLE_TOKEN CREATOMATE_API_KEY FAL_KEY; do [ -n "${!k}" ] || miss="$miss $k"; done
+          if [ -n "$miss" ]; then echo "::error::missing repository secret(s):$miss"; exit 1; fi
+          echo "all secrets set"
+      - name: run job
+        env:
+          JOB: ${{ inputs.job }}
+          BASE: ${{ inputs.base }}
+          TABLE: ${{ inputs.table }}
+          AIRTABLE_TOKEN: ${{ secrets.AIRTABLE_TOKEN }}
+          CREATOMATE_API_KEY: ${{ secrets.CREATOMATE }}
+          FAL_KEY: ${{ secrets.FAL_KEY }}
+        run: python3 worker/run_job.py --job "$JOB" --base "$BASE" --table "$TABLE" --work "$RUNNER_TEMP/erase"
