@@ -47,7 +47,9 @@ def step(name):
 def http(method, url, body=None, headers=None, timeout=120, tries=4):
     """JSON request with retries on 429 / 5xx / network errors. Returns the parsed answer (or {} for an empty one)."""
     data = None if body is None else (body if isinstance(body, bytes) else json.dumps(body).encode())
-    h = {'Content-Type': 'application/json'} if body is not None and not isinstance(body, bytes) else {}
+    # Cloudflare in front of some APIs answers 403 «error code: 1010» to Python's default User-Agent
+    h = {'User-Agent': 'text-erase-worker/1 (+https://github.com/cybzhyto/text-erase-worker)', 'Accept': 'application/json'}
+    if body is not None and not isinstance(body, bytes): h['Content-Type'] = 'application/json'
     h.update(headers or {})
     for k in range(tries):
         try:
@@ -235,7 +237,8 @@ def main():
         step('done')
     except Exception as e:
         LOG.write('\n' + traceback.format_exc()); LOG.flush()
-        say(f'FAILED at «{STEP["name"]}»: {type(e).__name__}')   # the message itself may carry private text: record only
+        m = re.search(r'https://([a-z0-9.-]+)/\S*… (HTTP \d+)', str(e))   # host + status only: the rest may carry private text
+        say(f'FAILED at «{STEP["name"]}»: {type(e).__name__}' + (f' ({m.group(2)} from {m.group(1)})' if m else ''))
         if rec:
             try:
                 tail = open(f'{W}/log.txt').read()[-1500:]
