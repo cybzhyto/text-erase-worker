@@ -16,13 +16,15 @@ Spec v1 (JSON, written by the caller):
      "name": "file-stem",                     hosted file name, optional
      "check": 40,                             plate.py --check threshold, optional
      "onDone": {field: value},                extra record fields to set after success (e.g. a status), optional
-     "onFail": {field: value}}                extra record fields to set after a failure, optional
+     "onFail": {field: value},                extra record fields to set after a failure, optional
+     "gz": "…"}                               optional: base64 gzip of a JSON object merged into the spec (an inline spec
+                                              in the record stays under its size limit)
 On success the record gets Options.deliverUrl = the hosted mp4 and Options.erase = {state: done, …, check}.
 On failure: Options.erase = {state: failed, step, error}; the caller decides what a failure means.
 
 The repository is public, so are its Actions logs: nothing from the spec or the record (URLs, texts, field values)
 is ever printed. Engine output goes to WORK/log.txt (never uploaded); stdout gets step names, counts and timings only."""
-import argparse, json, os, re, subprocess, sys, time, traceback, urllib.error, urllib.request
+import argparse, base64, gzip, json, os, re, subprocess, sys, time, traceback, urllib.error, urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ENGINE = os.path.join(os.path.dirname(HERE), 'engine')
@@ -105,7 +107,9 @@ class Record:
         o = self.options()
         if erase is not None: o['erase'] = {**(o.get('erase') or {}), **erase}
         if deliver: o['deliverUrl'] = deliver
-        fields = {self.field: json.dumps(o, ensure_ascii=False, indent=1)}
+        txt = json.dumps(o, ensure_ascii=False, indent=1)
+        if len(txt) > 90000: txt = json.dumps(o, ensure_ascii=False, separators=(',', ':'))   # long text holds 100k chars
+        fields = {self.field: txt}
         fields.update(extra or {})
         http('PATCH', self.url, {'fields': fields, 'typecast': True}, headers=self.h)
 
@@ -174,6 +178,7 @@ def main():
             rec.patch(erase={'state': 'running', 'run': os.environ.get('GITHUB_RUN_ID'), 'at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())})
         else:
             spec = json.load(open(a.spec))
+        if spec.get('gz'): spec = {**spec, **json.loads(gzip.decompress(base64.b64decode(spec.pop('gz'))))}   # packed fields
         if spec.get('v') != 1: raise RuntimeError('spec v1 expected')
         rb = spec.get('renderBody') or http('GET', spec['renderBodyUrl'])
         json.dump(rb, open(f'{W}/rb.json', 'w')); json.dump(spec.get('cfg') or {}, open(f'{W}/cfg.json', 'w'))
