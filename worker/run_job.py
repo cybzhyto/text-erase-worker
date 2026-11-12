@@ -105,7 +105,9 @@ class Record:
         o = self.options()
         if erase is not None: o['erase'] = {**(o.get('erase') or {}), **erase}
         if deliver: o['deliverUrl'] = deliver
-        fields = {self.field: json.dumps(o, ensure_ascii=False, indent=1)}
+        txt = json.dumps(o, ensure_ascii=False, indent=1)
+        if len(txt) > 90000: txt = json.dumps(o, ensure_ascii=False, separators=(',', ':'))   # long text holds 100k chars
+        fields = {self.field: txt}
         fields.update(extra or {})
         http('PATCH', self.url, {'fields': fields, 'typecast': True}, headers=self.h)
 
