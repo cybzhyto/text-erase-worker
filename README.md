@@ -23,6 +23,7 @@ come from the same page.
 ## Files
 | | |
 |---|---|
+| `engine/auto_zones.py` | the caller's text analysis of this build → the cfg, measured on the source (step «measure zones») |
 | `engine/build_math.py` | render body + cfg → erase zones (`ov.zones.json`), overlay bodies over black / white, caption pages |
 | `engine/plate.py` | the plate (erased video); `--check N` = letters still standing out + blur where no text was |
 | `engine/composite.py` | plate + B / W overlay renders (+ local caption pages) → final mp4, audio from B |
@@ -39,6 +40,26 @@ and stops with the reference that matched nothing (or more than one layer where 
 The same build drift can move what the new version keeps of the source (an «orig …» layer of source pixels) onto a
 zone the plate erases, which would bring the old letters back: `build_math.py` stops then too («the cfg does not fit
 this build»), and the reason reaches the job's private error field.
+
+## Automatic zones (`engine/auto_zones.py`)
+A spec with `auto` (the caller's per-block text analysis: blocks with role / time / rough box, exact boxes read on
+stills, shot changes, what the build covers) gets its cfg measured on the source instead of written by hand:
+- **Caption boxes**, frame by frame at 10 fps: a box = a rectangle of pure black (max channel ≤ 3) whose columns stay
+  black in most rows of the band and whose rows are at least a quarter black (letters cover less); a column without
+  gap bridging, so the box's antialiased edge parts it from a dark coat right next to it, and margin rows ≥ 0.85
+  black fix its top and bottom. No box: bare light letters (a top-hat > 60 over their surround, so a flat cream wall
+  is not text) that fill ≥ 12 % of their bbox, ≤ 2 lines tall, not cut by the frame edge.
+- **The new caption box**: height = the measured one-line boxes (p10 / p90, +0.25 %), radius ≤ the old box's corner
+  (measured) and ≤ the build's own plate, `old_boxes` «all» only when no bare-letter page was seen.
+- **Every other block, per shot**: mode, kernel, threshold and brightness gate from the pixels inside its read box
+  (polarity: the extreme further from the background). White letters partly over a light background get a second
+  zone for the near-white fill (threshold 12, gate ≈ fill − 17): there they stand out by only ~25. The legal line is
+  light when its brightest pixels rise ≥ 14 above the background (white letters with a dark outline), else dark
+  (grey letters on a light page); colour reads are not used there, they name the outline colour.
+- **Moving text** (a bouncing pill, a sliding end-card line): the read box is followed by template matching at 4 fps
+  (± 48 px) and the zone covers the union of its places.
+- **Kept blocks** (logo, UI, sticker; prices unless the build lifted the tag) clip the zones that would cover them.
+A `cfg` next to `auto` is laid over the measured cfg key by key (a hand override).
 
 ## Privacy (this repository is public)
 Only code lives here: no media, no job data, no URLs, no texts. Jobs reach the runner as a record id; the worker reads

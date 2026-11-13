@@ -13,6 +13,9 @@ Spec v1 (JSON, written by the caller):
      "src": "https://… .mp4"                  the source video (the old text is burned in)
      "renderBody": {…} | "renderBodyUrl": "…" the caller's full render body (RenderScript) of the new version
      "cfg": {…} | "cfgUrl": "…"               erase zones and overlay rules for engine/build_math.py (see README)
+     "auto": {…} | "autoUrl": "…"             or: the caller's text analysis of this build (engine/auto_zones.py);
+                                              the zones are then measured on the source (step «measure zones»).
+                                              "cfg" next to "auto" = extra keys laid over the measured cfg
      "name": "file-stem",                     hosted file name, optional
      "check": 40,                             plate.py --check threshold, optional
      "onDone": {field: value},                extra record fields to set after success (e.g. a status), optional
@@ -199,11 +202,22 @@ def main():
         if spec.get('gz'): spec = {**spec, **json.loads(gzip.decompress(base64.b64decode(spec.pop('gz'))))}   # packed fields
         if spec.get('v') != 1: raise RuntimeError('spec v1 expected')
         rb = spec.get('renderBody') or http('GET', spec['renderBodyUrl'])
-        json.dump(rb, open(f'{W}/rb.json', 'w')); json.dump(spec.get('cfg') or (http('GET', spec['cfgUrl']) if spec.get('cfgUrl') else {}), open(f'{W}/cfg.json', 'w'))
+        json.dump(rb, open(f'{W}/rb.json', 'w'))
+        cfg = spec.get('cfg') or (http('GET', spec['cfgUrl']) if spec.get('cfgUrl') else {})
+        auto = spec.get('auto') or (http('GET', spec['autoUrl']) if spec.get('autoUrl') else None)
+        json.dump(cfg, open(f'{W}/cfg.json', 'w'))
 
         step('download source')
         src = download(spec['src'], f'{W}/src.mp4'); S = probe(src)
         say(f'source {S["w"]}x{S["h"]} {S["fps"]:.2f} fps {S["dur"]:.2f} s')
+
+        if auto:
+            step('measure zones')
+            json.dump(auto, open(f'{W}/auto.json', 'w'))
+            run([sys.executable, f'{ENGINE}/auto_zones.py', f'{W}/auto.json', f'{W}/rb.json', src, f'{W}/cfg.auto.json'])
+            meas = json.load(open(f'{W}/cfg.auto.json'))
+            json.dump({**meas, **cfg}, open(f'{W}/cfg.json', 'w'))          # caller keys win (an explicit override)
+            say(f'{len(meas.get("zones_extra", []))} zones, {len(meas.get("caption_rects", []))} caption rects measured')
 
         step('split render body')
         run([sys.executable, f'{ENGINE}/build_math.py', f'{W}/rb.json', spec['src'], f'{W}/ov', f'{W}/cfg.json'])
