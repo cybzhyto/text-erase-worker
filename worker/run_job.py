@@ -80,8 +80,15 @@ def download(url, path, tries=4):
 def run(args, **kw):
     """An engine step; its output goes to the private log only."""
     LOG.write(f'\n$ {" ".join(os.path.basename(a) if a.startswith("/") else a for a in args[:3])} …\n'); LOG.flush()
+    at = LOG.tell()
     r = subprocess.run(args, stdout=LOG, stderr=subprocess.STDOUT, **kw)
-    if r.returncode: raise RuntimeError(f'{os.path.basename(args[1]) if len(args) > 1 else args[0]} exited {r.returncode}')
+    if r.returncode:
+        # the step's own last line (an engine's SystemExit reason) goes with the error: into the private job record only
+        LOG.flush(); last = ''
+        try:
+            with open(LOG.name) as f: f.seek(at); last = ([x for x in f.read().splitlines() if x.strip()] or [''])[-1].strip()
+        except Exception: pass
+        raise RuntimeError(f'{os.path.basename(args[1]) if len(args) > 1 else args[0]} exited {r.returncode}' + (f': {last[:400]}' if last else ''))
 
 
 def probe(path):

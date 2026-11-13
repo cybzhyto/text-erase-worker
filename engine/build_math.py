@@ -327,6 +327,52 @@ dropped = [(e.get('track'), e.get('time'), e.get('duration')) for e in app] + \
 keep = [e for e in keep if e.get('type') not in ('composition', 'video') or (e.get('name') or '').startswith('orig ')]
 app = []
 print('dropped bands (track, time, dur):', dropped)
+
+
+def opaque_span(shape):
+    """A linear-gradient alpha mask -> (axis, lo %, hi %) of its opaque part; axis 'x' when it runs left to right."""
+    stops = shape.get('fill_color')
+    if not isinstance(stops, list): return None
+    on = [float(str(s['offset']).rstrip('%')) for s in stops if str(s.get('color', '')).replace(' ', '').endswith(',1)')]
+    if not on: return None
+    horiz = str(shape.get('fill_x0', '')) != str(shape.get('fill_x1', '')) and shape.get('fill_x0') is not None
+    return ('x' if horiz else 'y', min(on), max(on))
+
+
+def orig_rect(e):
+    """Where a kept «orig …» layer shows the source's own pixels: [x0, y0, x1, y1] % of the frame (gradient masks)."""
+    r = {'x': [0.0, 100.0], 'y': [0.0, 100.0]}
+    def walk(el):
+        for s in el.get('elements', []):
+            if s.get('type') == 'shape' and s.get('mask_mode') == 'alpha':
+                sp = opaque_span(s)
+                if sp: r[sp[0]] = [max(r[sp[0]][0], sp[1]), min(r[sp[0]][1], sp[2])]
+            if s.get('type') == 'composition': walk(s)
+    walk(e)
+    return [r['x'][0], r['y'][0], r['x'][1], r['y'][1]]
+
+
+# A cfg is measured on one build. The next build of the same video may place things differently (2026-11-13: one build
+# lifted a price tag off the old legal line and drew a new one; the next kept the original tag as source pixels, which
+# also carry the old letters crossing it). Source pixels kept on top of a zone the plate erases bring those letters
+# back, so such a build does not fit the cfg: stop here instead of delivering the old text.
+clash = []
+for e in keep:
+    if not (e.get('name') or '').startswith('orig ') or e.get('type') != 'composition': continue
+    ox0, oy0, ox1, oy1 = px(*orig_rect(e)); t0, t1 = float(e['time']), float(e['time']) + float(e['duration'])
+    area = max(1, (ox1 - ox0) * (oy1 - oy0))
+    for z in Z:
+        if z[0] >= t1 - 0.05 or z[1] <= t0 + 0.05: continue
+        iw, ih = min(ox1, z[4]) - max(ox0, z[2]), min(oy1, z[5]) - max(oy0, z[3])
+        if iw > 0 and ih > 0 and iw * ih / area > 0.15:
+            clash.append((e.get('name'), round(t0, 2), [ox0, oy0, ox1, oy1], z[:7]))
+if clash:
+    for c in clash: print('clash: source pixels kept by', c[0], 'at', c[1], 's', c[2], 'cover the erase zone', c[3])
+    n_layers = len({(c[0], c[1], tuple(c[2])) for c in clash})
+    raise SystemExit(f'the cfg does not fit this build: {n_layers} kept source layer(s) cover zones the plate erases '
+                     f'(the old letters would come back); measure the cfg on this build')
+
+
 def body(bg):
     out_els = [e for e in keep if e.get('type') == 'audio']
     out_els.append({"type": "shape", "track": 2, "time": 0, "duration": D, "x": "50%", "y": "50%", "width": "100%",
