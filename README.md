@@ -36,6 +36,9 @@ measured on one build breaks on the next if it names layers by track number. Eve
 `text_set` / `text_y_keys`) takes a number (that body only), `"transcript"` (the caption layer), `{"name": "…"}` or
 `{"text": "starts with …", "time": t, "named": true|false}`; `build_math.py` resolves them against the body it is given
 and stops with the reference that matched nothing (or more than one layer where one is needed).
+The same build drift can move what the new version keeps of the source (an «orig …» layer of source pixels) onto a
+zone the plate erases, which would bring the old letters back: `build_math.py` stops then too («the cfg does not fit
+this build»), and the reason reaches the job's private error field.
 
 ## Privacy (this repository is public)
 Only code lives here: no media, no job data, no URLs, no texts. Jobs reach the runner as a record id; the worker reads
