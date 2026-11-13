@@ -12,7 +12,7 @@ Spec v1 (JSON, written by the caller):
     {"v": 1,
      "src": "https://… .mp4"                  the source video (the old text is burned in)
      "renderBody": {…} | "renderBodyUrl": "…" the caller's full render body (RenderScript) of the new version
-     "cfg": {…}                               erase zones and overlay rules for engine/build_math.py (see README)
+     "cfg": {…} | "cfgUrl": "…"               erase zones and overlay rules for engine/build_math.py (see README)
      "name": "file-stem",                     hosted file name, optional
      "check": 40,                             plate.py --check threshold, optional
      "onDone": {field: value},                extra record fields to set after success (e.g. a status), optional
@@ -21,6 +21,8 @@ Spec v1 (JSON, written by the caller):
                                               in the record stays under its size limit)
 On success the record gets Options.deliverUrl = the hosted mp4 and Options.erase = {state: done, …, check}.
 On failure: Options.erase = {state: failed, step, error}; the caller decides what a failure means.
+A run starts by clearing the last run's keys (RUN_KEYS) and Options.deliverUrl; every other key of Options.erase
+(the spec, the caller's own inputs) stays.
 
 The repository is public, so are its Actions logs: nothing from the spec or the record (URLs, texts, field values)
 is ever printed. Engine output goes to WORK/log.txt (never uploaded); stdout gets step names, counts and timings only."""
@@ -104,13 +106,15 @@ class Record:
         try: return json.loads(raw)
         except ValueError: raise RuntimeError(f'{self.field} is not JSON') from None
 
+    RUN_KEYS = ('state', 'run', 'at', 'step', 'error', 'logTail', 'check', 'secs')
+
     def patch(self, erase=None, extra=None, deliver=None, fresh=False):
         """Read-modify-write of Options (erase block merged, deliverUrl set) + extra fields, in one PATCH.
-        fresh=True starts a run: keeps only erase.spec and drops the last run's keys and deliverUrl, so a
-        failed re-run never leaves an old file to deliver or an old error beside state 'done'."""
+        fresh=True starts a run: drops the last run's keys (RUN_KEYS) and deliverUrl, so a failed re-run never
+        leaves an old file to deliver or an old error beside state 'done'; the caller's keys (spec, cfg) stay."""
         o = self.options()
         if fresh:
-            o['erase'] = {k: v for k, v in (o.get('erase') or {}).items() if k == 'spec'}
+            o['erase'] = {k: v for k, v in (o.get('erase') or {}).items() if k not in self.RUN_KEYS}
             o.pop('deliverUrl', None)
         if erase is not None: o['erase'] = {**(o.get('erase') or {}), **erase}
         if deliver: o['deliverUrl'] = deliver
@@ -188,7 +192,7 @@ def main():
         if spec.get('gz'): spec = {**spec, **json.loads(gzip.decompress(base64.b64decode(spec.pop('gz'))))}   # packed fields
         if spec.get('v') != 1: raise RuntimeError('spec v1 expected')
         rb = spec.get('renderBody') or http('GET', spec['renderBodyUrl'])
-        json.dump(rb, open(f'{W}/rb.json', 'w')); json.dump(spec.get('cfg') or {}, open(f'{W}/cfg.json', 'w'))
+        json.dump(rb, open(f'{W}/rb.json', 'w')); json.dump(spec.get('cfg') or (http('GET', spec['cfgUrl']) if spec.get('cfgUrl') else {}), open(f'{W}/cfg.json', 'w'))
 
         step('download source')
         src = download(spec['src'], f'{W}/src.mp4'); S = probe(src)
