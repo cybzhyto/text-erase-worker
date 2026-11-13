@@ -49,6 +49,12 @@ enc = None if SHOW else subprocess.Popen(['ffmpeg', '-v', 'error', '-y', '-f', '
                         '-i', Bk, '-map', '0:v', '-map', '1:a', '-c:v', 'libx264', '-preset', 'medium', '-crf', '17',
                         '-pix_fmt', 'yuv420p', '-c:a', 'copy', '-movflags', '+faststart', '-shortest', OUT], stdin=subprocess.PIPE)
 n = W * H * 3; i = 0
+def runs(mask):
+    """[(r0, r1)] of the True stretches of a row mask."""
+    idx = np.flatnonzero(mask)
+    if not len(idx): return []
+    br = np.flatnonzero(np.diff(idx) > 1)
+    return list(zip(np.r_[idx[0], idx[br + 1]], np.r_[idx[br], idx[-1]] + 1))
 while True:
     bs = [p.stdout.read(n) for p in ps]
     if any(len(b) < n for b in bs): break
@@ -56,24 +62,36 @@ while True:
         i += 1
         if i > SHOW[-1]: break
         continue
-    p, b, w = (np.frombuffer(x, np.uint8).reshape(H, W, 3).astype(np.float32) for x in bs)
-    a = np.clip(1 - (w - b) / 255, 0, 1)
-    empty = ((w - b).min(2) > 247) & (b.max(2) < 6)          # nothing drawn here: keep the plate pixel exactly (codec noise)
-    a[empty] = 0; b[empty] = 0
+    pu, bu, wu = (np.frombuffer(x, np.uint8).reshape(H, W, 3) for x in bs)
     t = i / FPS
-    for t0, t1, x0, y0, x1, y1 in CAP.get('clear', []):
-        if t0 <= t < t1: a[y0:y1, x0:x1] = 0; b[y0:y1, x0:x1] = 0
-    o = p * (1 - a) + b
+    # Speed (2026-11-13: 6 of a 10-min job were this loop): the float math runs only on the rows the overlay may draw on or
+    # a caption page covers. Every step is per pixel, so a row is computed exactly as on the whole frame; a row where
+    # b < 6 and w > 252 everywhere is all «empty» below (a = 0, b = 0), i.e. the plate pixel as it is.
+    need = (bu.max(axis=(1, 2)) >= 6) | (wu.min(axis=(1, 2)) <= 252)
+    pages = []
     for pg, (rgb, sa, X0, Y0, cx, cy) in zip(CAP['pages'], SP):
         if not pg['t0'] <= t < pg['t1']: continue
         if pg.get('keys'):
             kx, ky = at(pg['keys'], t); X0, Y0 = int(round(kx - cx)), int(round(ky - cy))
-        h_, w_ = sa.shape; ys, xs = slice(max(Y0, 0), min(Y0 + h_, H)), slice(max(X0, 0), min(X0 + w_, W))
-        sy, sx = slice(ys.start - Y0, ys.stop - Y0), slice(xs.start - X0, xs.stop - X0)
-        al = sa[sy, sx][..., None]; o[ys, xs] = o[ys, xs] * (1 - al) + rgb[sy, sx] * al
-    o = np.clip(o, 0, 255).astype(np.uint8)
-    if SHOW: Image.fromarray(o).save(f'{OUT}/f{i / FPS:.2f}.png')
-    else: enc.stdin.write(o.tobytes())
+        pages.append((rgb, sa, X0, Y0)); need[max(Y0, 0):max(min(Y0 + sa.shape[0], H), 0)] = True
+    out = pu.copy()
+    for r0, r1 in runs(need):
+        p, b, w = (x[r0:r1].astype(np.float32) for x in (pu, bu, wu))
+        a = np.clip(1 - (w - b) / 255, 0, 1)
+        empty = ((w - b).min(2) > 247) & (b.max(2) < 6)          # nothing drawn here: keep the plate pixel exactly (codec noise)
+        a[empty] = 0; b[empty] = 0
+        for t0, t1, x0, y0, x1, y1 in CAP.get('clear', []):
+            lo, hi = max(y0, r0), min(y1, r1)
+            if t0 <= t < t1 and lo < hi: a[lo - r0:hi - r0, x0:x1] = 0; b[lo - r0:hi - r0, x0:x1] = 0
+        o = p * (1 - a) + b
+        for rgb, sa, X0, Y0 in pages:
+            h_, w_ = sa.shape; y0_, y1_ = max(Y0, 0, r0), min(Y0 + h_, H, r1)
+            if y0_ >= y1_: continue
+            xs = slice(max(X0, 0), min(X0 + w_, W)); sx = slice(xs.start - X0, xs.stop - X0); sy = slice(y0_ - Y0, y1_ - Y0)
+            al = sa[sy, sx][..., None]; o[y0_ - r0:y1_ - r0, xs] = o[y0_ - r0:y1_ - r0, xs] * (1 - al) + rgb[sy, sx] * al
+        out[r0:r1] = np.clip(o, 0, 255).astype(np.uint8)
+    if SHOW: Image.fromarray(out).save(f'{OUT}/f{i / FPS:.2f}.png')
+    else: enc.stdin.write(out.tobytes())
     i += 1
 if enc: enc.stdin.close(); enc.wait()
 print('composited', i, 'frames ->', OUT)
