@@ -104,9 +104,14 @@ class Record:
         try: return json.loads(raw)
         except ValueError: raise RuntimeError(f'{self.field} is not JSON') from None
 
-    def patch(self, erase=None, extra=None, deliver=None):
-        """Read-modify-write of Options (erase block merged, deliverUrl set) + extra fields, in one PATCH."""
+    def patch(self, erase=None, extra=None, deliver=None, fresh=False):
+        """Read-modify-write of Options (erase block merged, deliverUrl set) + extra fields, in one PATCH.
+        fresh=True starts a run: keeps only erase.spec and drops the last run's keys and deliverUrl, so a
+        failed re-run never leaves an old file to deliver or an old error beside state 'done'."""
         o = self.options()
+        if fresh:
+            o['erase'] = {k: v for k, v in (o.get('erase') or {}).items() if k == 'spec'}
+            o.pop('deliverUrl', None)
         if erase is not None: o['erase'] = {**(o.get('erase') or {}), **erase}
         if deliver: o['deliverUrl'] = deliver
         txt = json.dumps(o, ensure_ascii=False, indent=1)
@@ -177,7 +182,7 @@ def main():
             if isinstance(sp, dict): spec = sp                          # inline (tests; a big render body would not fit)
             elif isinstance(sp, str) and sp.startswith('https://'): spec = http('GET', sp)
             else: raise RuntimeError('Options.erase.spec is missing')
-            rec.patch(erase={'state': 'running', 'run': os.environ.get('GITHUB_RUN_ID'), 'at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())})
+            rec.patch(erase={'state': 'running', 'run': os.environ.get('GITHUB_RUN_ID'), 'at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}, fresh=True)
         else:
             spec = json.load(open(a.spec))
         if spec.get('gz'): spec = {**spec, **json.loads(gzip.decompress(base64.b64decode(spec.pop('gz'))))}   # packed fields
