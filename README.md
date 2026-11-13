@@ -55,7 +55,9 @@ stills, shot changes, what the build covers) gets its cfg measured on the source
   (polarity: the extreme further from the background). White letters partly over a light background get a second
   zone for the near-white fill (threshold 12, gate ≈ fill − 17): there they stand out by only ~25. The legal line is
   light when its brightest pixels rise ≥ 14 above the background (white letters with a dark outline), else dark
-  (grey letters on a light page); colour reads are not used there, they name the outline colour.
+  (grey letters on a light page); colour reads are not used there, they name the outline colour. A light legal line
+  takes gate 150 and grow 4: its outline / drop shadow sits up to 4 px past the fill, and a gate set from the
+  background (cream: 241) kept only the core of each letter, so the shadow's bottom row stayed as a dotted line.
 - **Moving text** (a bouncing pill, a sliding end-card line): the read box is followed by template matching at 4 fps
   (± 48 px) and the zone covers the union of its places.
 - **Kept blocks** (logo, UI, sticker; prices unless the build lifted the tag) clip the zones that would cover them.
