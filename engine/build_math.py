@@ -5,6 +5,57 @@ import json, re, sys
 rb = json.load(open(sys.argv[1])); SRC = sys.argv[2]; OUT = sys.argv[3]
 els = rb['elements']; D = rb['duration']
 cfg = json.load(open(sys.argv[4])) if len(sys.argv) > 4 else {}
+
+
+def tracks_of(sel, key):
+    """A cfg layer reference -> the top-level track numbers it means in THIS body.
+    Track numbers differ between two builds of the same video (any added or dropped band shifts every layer after it),
+    so a cfg written for one build should name its layers instead:
+      int                                  the track number itself (only safe for the body the cfg was measured on)
+      "transcript"                         the text layer that carries a transcript (the captions)
+      {"name": "…"}                        layers with exactly this name
+      {"text": "…", "time": t, "named": b} text layers whose text starts with "…"; optional: starts at t (±0.05 s),
+                                           has a name (true) / has none (false)"""
+    if isinstance(sel, bool): raise SystemExit(f'cfg {key}: {sel!r} is not a layer reference')
+    if isinstance(sel, int): return [sel]
+    if isinstance(sel, str) and sel.isdigit(): return [int(sel)]
+    if sel == 'transcript': hit = [e for e in els if e.get('type') == 'text' and e.get('transcript_source')]
+    elif isinstance(sel, dict) and 'name' in sel: hit = [e for e in els if e.get('name') == sel['name']]
+    elif isinstance(sel, dict) and 'text' in sel:
+        hit = [e for e in els if e.get('type') == 'text' and str(e.get('text') or '').strip().startswith(sel['text'])
+               and ('time' not in sel or abs(float(e.get('time') or 0) - float(sel['time'])) <= 0.05)
+               and ('named' not in sel or bool(e.get('name')) == bool(sel['named']))]
+    else: raise SystemExit(f'cfg {key}: unknown layer reference {sel!r}')
+    out = sorted({e.get('track') for e in hit})
+    if not out: raise SystemExit(f'cfg {key}: no layer matches {sel!r} in this render body')
+    return out
+
+
+def one_track(sel, key):
+    t = tracks_of(sel, key)
+    if len(t) != 1: raise SystemExit(f'cfg {key}: {sel!r} matches {len(t)} tracks {t}, expected one')
+    return t[0]
+
+
+def many_tracks(sels, key):
+    return sorted({t for s in (sels if isinstance(sels, list) else [sels]) for t in tracks_of(s, key)})
+
+
+# every layer reference in the cfg becomes this body's track numbers before anything reads it
+for k in ('drop_text_tracks', 'drop_band_tracks'):
+    if cfg.get(k): cfg[k] = many_tracks(cfg[k], k)
+if isinstance(cfg.get('dark_text'), (dict, list)):
+    for w in ([cfg['dark_text']] if isinstance(cfg['dark_text'], dict) else cfg['dark_text']):
+        w['tracks'] = many_tracks(w['tracks'], 'dark_text.tracks')
+if cfg.get('caption_text_track') is not None: cfg['caption_text_track'] = one_track(cfg['caption_text_track'], 'caption_text_track')
+if cfg.get('caption_pages'): cfg['caption_pages']['track'] = one_track(cfg['caption_pages']['track'], 'caption_pages.track')
+for k in ('text_set', 'text_y_keys'):          # keyed by track: a key may be a number or a JSON layer reference
+    if cfg.get(k):
+        cfg[k] = {str(one_track(json.loads(s) if s[:1] in '{"' else s, k)): v for s, v in cfg[k].items()}
+print('cfg layers:', {k: cfg[k] for k in ('drop_text_tracks', 'drop_band_tracks', 'caption_text_track') if cfg.get(k) is not None},
+      'caption_pages.track', (cfg.get('caption_pages') or {}).get('track'))
+
+
 def r2(x): return round(float(x) * 100) / 100
 def r1(x): return round(float(x) * 10) / 10
 def bbox(path):

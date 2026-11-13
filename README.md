@@ -29,6 +29,14 @@ come from the same page.
 | `engine/measure.py`, `segs.py`, `track.py`, `splice.py` | zone measuring, a tracked moving element, re-made frame ranges |
 | `worker/run_job.py` | one job end to end (spec contract in its docstring) |
 
+## Layers in the cfg: name them, don't number them
+Two builds of the same video number their layers differently (one more band shifts every track after it), so a cfg
+measured on one build breaks on the next if it names layers by track number. Every layer reference in the cfg
+(`drop_text_tracks`, `drop_band_tracks`, `dark_text[].tracks`, `caption_text_track`, `caption_pages.track`, keys of
+`text_set` / `text_y_keys`) takes a number (that body only), `"transcript"` (the caption layer), `{"name": "…"}` or
+`{"text": "starts with …", "time": t, "named": true|false}`; `build_math.py` resolves them against the body it is given
+and stops with the reference that matched nothing (or more than one layer where one is needed).
+
 ## Privacy (this repository is public)
 Only code lives here: no media, no job data, no URLs, no texts. Jobs reach the runner as a record id; the worker reads
 the job with repository secrets and prints step names, counts and timings only. No artifacts are uploaded.
