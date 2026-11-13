@@ -143,7 +143,8 @@ def measure(frames, t0, t1, rect, k, polarity=None, holes=()):
             return {'mode': 'both', 'k': k, 'thr': min(tl, td), 'grow': 3, 'lmin': lmin}
         return [{'mode': 'light', 'k': k, 'thr': tl, 'grow': 3, 'lmin': lmin},
                 {'mode': 'dark', 'k': k, 'thr': td, 'grow': 3, 'lmin': 150}]
-    if polarity == 'legal':     # the legal line: white letters with a dark outline / shadow (house style) rise above the
+    legal = polarity == 'legal'
+    if legal:                   # the legal line: white letters with a dark outline / shadow (house style) rise above the
         # background (cream 233 -> fill 255: +22); grey or dark letters on a light page do not (+0 .. +7). Colour reads name
         # the outline colour for outlined letters, so the pixels decide
         polarity = 'light' if top - bg >= 14 else 'dark'
@@ -151,6 +152,11 @@ def measure(frames, t0, t1, rect, k, polarity=None, holes=()):
     if dark:
         return {'mode': 'dark', 'k': k, 'thr': int(np.clip(round(0.45 * B), 10, 70)), 'grow': 3 if k <= 31 else 8, 'lmin': 150}
     z = {'mode': 'light', 'k': k, 'thr': int(np.clip(round(0.45 * T), 10, 70)), 'grow': {15: 3, 31: 5}.get(k, 12), 'lmin': lmin}
+    if legal:   # small outlined letters: the dark outline / drop shadow sits up to 4 px past the fill, and a high brightness
+        # gate (cream: 241) keeps only the core of each letter, so grow 3 left the shadow's bottom row as a dotted line
+        # (2026-11-13). The hand cfgs' gate 150 + grow 4 takes the whole letter and its shadow; the
+        # top-hat threshold alone keeps the plain background out
+        z.update(lmin=150, grow=4)
     # white letters partly over a light background (cream wall: bg 225, fill 250) stand out by only ~25 there, under
     # the threshold the dark parts of the shot set: a second zone takes only the near-white fill, low step, high gate
     if top >= 235 and p75 >= 185 and z['thr'] > 20:
