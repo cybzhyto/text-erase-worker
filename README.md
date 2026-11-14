@@ -49,6 +49,21 @@ stills, shot changes, what the build covers) gets its cfg measured on the source
   gap bridging, so the box's antialiased edge parts it from a dark coat right next to it, and margin rows ≥ 0.85
   black fix its top and bottom. No box: bare light letters (a top-hat > 60 over their surround, so a flat cream wall
   is not text) that fill ≥ 12 % of their bbox, ≤ 2 lines tall, not cut by the frame edge.
+- **Translucent caption plates** (the reads name a dark plate that is not pure black): such a plate darkens the picture
+  behind it, so its pixels move with the background (one test video: 49 over a white app screen, 30–40 over a floor,
+  under 12 over dark trousers) and no fixed colour finds it. Measured on every frame of the source, letters first:
+  bright islands that pixels as dark as the plate enclose (how dark = the ratio plate / background at the plate's
+  edges on the read stills, taken over white, + 12), kept while their bounding rectangle holds nothing but plate and
+  letters. Each edge is the first line past the letters that is not dark. A page = the frames whose letters stay; its
+  edge is the innermost one any of its frames saw. An edge hidden by something as dark as the plate (trousers, a
+  coat, a plant beside it) takes the padding of the opposite side, the same on a plate, else the video's median
+  padding. One rect per page, kind `P`, from the page's first frame to its last; `build_math.py` erases the whole
+  old plate for that time (the build's new plate is translucent too and would show the old letters through) and
+  takes the build's own dark plates (`rgba(r,g,b,a)`, any darkness, not only black) as the new boxes. No
+  `caption_pages` for such a source. When the pages do not agree on a plate's padding (bare letters over a dark
+  part of the picture have next to none), the reads were wrong and the measures above run as without them. Not
+  measured: a plate lighter than mid-grey; a one-letter page whose plate is hidden on two sides; a last word in a
+  colour much darker than the other letters (the rect ends before it).
 - **The new caption box**: height = the measured one-line boxes (p10 / p90, +0.25 %), radius ≤ the old box's corner
   (measured) and ≤ the build's own plate, `old_boxes` «all» only when no bare-letter page was seen.
 - **Every other block, per shot**: mode, kernel, threshold and brightness gate from the pixels inside its read box

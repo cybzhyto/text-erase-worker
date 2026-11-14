@@ -18,6 +18,8 @@ Spec v1 (JSON, written by the caller):
                                               "cfg" next to "auto" = extra keys laid over the measured cfg
      "name": "file-stem",                     hosted file name, optional
      "check": 40,                             plate.py --check threshold, optional
+     "allowUncovered": true,                  optional: do not stop when caption blocks have no erase zone (a hand check)
+     "allowResidue": true,                    optional: do not stop when old outlined caption letters are left on the plate
      "onDone": {field: value},                extra record fields to set after success (e.g. a status), optional
      "onFail": {field: value},                extra record fields to set after a failure, optional
      "gz": "…"}                               optional: base64 gzip of a JSON object merged into the spec (an inline spec
@@ -218,6 +220,14 @@ def main():
             meas = json.load(open(f'{W}/cfg.auto.json'))
             json.dump({**meas, **cfg}, open(f'{W}/cfg.json', 'w'))          # caller keys win (an explicit override)
             say(f'{len(meas.get("zones_extra", []))} zones, {len(meas.get("caption_rects", []))} caption rects measured')
+            # every caption block of the source must be under an erase for most of its time: a block the measure
+            # missed keeps its old words under the new ones, so the job stops here instead of delivering that
+            cc = (meas.get('auto') or {}).get('captions')
+            if cc:
+                say(f'captions: {cc.get("style")}, {cc.get("blocks")} blocks, {cc.get("uncovered")} not covered')
+                if cc.get('uncovered') and not spec.get('allowUncovered'):
+                    raise RuntimeError(f'captions not covered: {cc["uncovered"]} of {cc["blocks"]} caption blocks have no erase zone '
+                                       f'for at least half of their time (style: {cc.get("style")}); nothing was rendered')
 
         step('split render body')
         run([sys.executable, f'{ENGINE}/build_math.py', f'{W}/rb.json', spec['src'], f'{W}/ov', f'{W}/cfg.json'])
@@ -239,6 +249,11 @@ def main():
         run([sys.executable, f'{ENGINE}/plate.py', f'{W}/ov.zones.json', src, f'{W}/plate.mp4', '--check', str(spec.get('check', 40))])
         LOG.flush(); chk = parse_check(open(f'{W}/log.txt').read()[mark:])
         say(f'check: {len(chk["residue"])} zones with residue, blur off the text in {chk["offText"]} frames')
+        # outlined caption letters are found by their own shape, so one still found on the plate is an old word left:
+        # a hard stop (the top-hat zones' residue above stays a note: it also fires on textured ground)
+        left = [r for r in chk['residue'] if r[1] == 'cap']
+        if left and not spec.get('allowResidue'):
+            raise RuntimeError(f'old caption letters left on the plate in {sum(r[4] for r in left)} frames (first at {min(r[2] for r in left):.2f} s)')
 
         if a.plate_only:
             step(f'done (plate only): {W}/plate.mp4'); return

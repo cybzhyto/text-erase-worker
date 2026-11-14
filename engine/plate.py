@@ -2,8 +2,18 @@
 No generated pixels: every filled pixel is a Gaussian-weighted average of the real pixels around the letters.
 usage: python3 plate.py ZONES.json SRC.mp4 OUT.mp4            -> the clean plate (x264 crf 12, no audio)
        python3 plate.py ZONES.json SRC.mp4 OUTDIR --at 0.5,6,17.5   -> preview pngs (orig | plate | mask)
-zones: [t0, t1, x0, y0, x1, y1 (px), mode light|dark|both|full, k (morph kernel > stroke width), thr (luma step), grow (px),
+zones: [t0, t1, x0, y0, x1, y1 (px), mode light|dark|both|full|exact, k (morph kernel > stroke width), thr (luma step), grow (px),
         lmin (optional, default 150: a light letter must be brighter than this; 60 on dark backgrounds so fade-ins are caught),
+        mode exact = full, on its own frames only: a full rect is also erased on the 2 frames before and after it
+        (the union below), fine for a box that sits still; a plate that comes and goes with its page blurred the
+        picture there for those frames.
+        mode cap = outlined caption letters (captions.py): k = their capital height in px; the zone rect is the band
+        the captions live in, the letters are found in every frame wherever they are. ZONES.json "cap" = {colors,
+        core, shadow, grow}: with a shadow model the soft shadow is divided out and only the letters are filled.
+        ZONES.json "still" = [{rect [x0, y0, x1, y1] px, times [[t0, t1]], k, thr, lmin}]: a text that stays the same
+        through many shots (the legal line). Its letters are found once, on the shots where they stand out, and that
+        one mask erases it in every frame of its times; its soft shadow is measured on the flattest frames and divided
+        out. On a white page such a text is only its grey shadow: no per-frame mask finds the letters there.
         static (optional, 0 = off): the text does not move during [t0, t1), so a pixel that is a letter in >= this share of
         the window's frames is erased in EVERY frame of it. Catches the frames where the per-frame mask misses letters
         (white letters over a light shot, fade-ins); a one-off false hit stays below the share. Prepass cached in
@@ -11,8 +21,25 @@ zones: [t0, t1, x0, y0, x1, y1 (px), mode light|dark|both|full, k (morph kernel 
        python3 plate.py ZONES.json SRC.mp4 - --static-only           -> only build the static-mask cache"""
 import json, subprocess, sys, collections, time
 import numpy as np, cv2
+import captions
 Zf, SRC, OUT = sys.argv[1:4]
 J = json.load(open(Zf)); W, H, FPS = J['w'], J['h'], J['fps']; Z = J['zones']
+CAP = J.get('cap') or {}                      # outlined captions (mode cap): {colors, core, shadow, grow}
+CAPZ = [i for i, z in enumerate(Z) if z[6] == 'cap']
+def cap_rect(z): return max(0, z[2]), max(0, z[3]), min(W, z[4]), min(H, z[5])
+def cap_erase(I, t):
+    """The frame with its outlined caption letters erased (mode cap zones on at t); the frame itself when there are none."""
+    O = I
+    for i in CAPZ:
+        z = Z[i]
+        if not on(z, t): continue
+        x0, y0, x1, y1 = cap_rect(z)
+        if x1 <= x0 or y1 <= y0: continue
+        c, n = captions.erase(I[y0:y1, x0:x1], z[7], CAP.get('colors') or (), CAP.get('shadow'), CAP.get('core', 7.0), CAP.get('grow', 0))
+        if n:
+            if O is I: O = I.copy()
+            O[y0:y1, x0:x1] = c
+    return O
 def on(z, t):   # zone z covers the frame at time t; by frame number, as the renderer shows an element: zone times are rounded
     return round(z[0] * FPS) <= round(t * FPS) < round(z[1] * FPS)   # (0.067 > 2/30: a plain time test skipped every 3rd frame of a tracked zone)
 R = 2           # the per-frame mask is unioned over +-R frames of the same shot
@@ -22,12 +49,68 @@ KER = {}
 def ker(k):
     if k not in KER: KER[k] = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
     return KER[k]
+STILL = J.get('still') or []
+def still_on(g, t): return any(round(a * FPS) <= round(t * FPS) < round(b * FPS) for a, b in g['times'])
+def still_prepare():
+    """Letter mask + shadow model of every "still" text, cached next to ZONES."""
+    import os
+    cf = Zf + '.still.npz'
+    if not STILL: return
+    if os.path.exists(cf) and os.path.getmtime(cf) >= os.path.getmtime(Zf):
+        d = np.load(cf, allow_pickle=True)
+        for i, g in enumerate(STILL): g['mask'] = d[f'm{i}']; g['shadow'] = (d[f's{i}'].tolist() or None); g['core'] = float(d[f'c{i}'])
+        return
+    t_lo, t_hi = min(a for g in STILL for a, _ in g['times']), max(b for g in STILL for _, b in g['times'])
+    p = subprocess.Popen(['ffmpeg', '-v', 'error', '-ss', f'{t_lo:.6f}', '-t', f'{t_hi - t_lo + 0.1:.6f}', '-i', SRC, '-vf', 'fps=10',
+                          '-f', 'rawvideo', '-pix_fmt', 'bgr24', '-'], stdout=subprocess.PIPE)
+    acc = [[] for _ in STILL]; j = 0
+    while True:
+        b = p.stdout.read(W * H * 3)
+        if len(b) < W * H * 3: break
+        t = t_lo + j / 10; j += 1
+        I = np.frombuffer(b, np.uint8).reshape(H, W, 3)
+        for i, g in enumerate(STILL):
+            if not still_on(g, t): continue
+            x0, y0, x1, y1 = g['rect']; k = g.get('k', 15); pad = k
+            X0, Y0, X1, Y1 = max(0, x0 - pad), max(0, y0 - pad), min(W, x1 + pad), min(H, y1 + pad)
+            L = cv2.cvtColor(I[Y0:Y1, X0:X1], cv2.COLOR_BGR2GRAY)
+            sel = ((cv2.morphologyEx(L, cv2.MORPH_TOPHAT, ker(k)) > g.get('thr', 40)) & (L > g.get('lmin', 150)))[y0 - Y0:y1 - Y0, x0 - X0:x1 - X0]
+            acc[i].append((sel, I[max(0, y0 - 60):min(H, y1 + 60), x0:x1].copy()))
+    out = {}
+    for i, g in enumerate(STILL):
+        g['mask'] = np.zeros((g['rect'][3] - g['rect'][1], g['rect'][2] - g['rect'][0]), np.uint8); g['shadow'] = None; g['core'] = 2.5
+        if acc[i]:
+            n = np.array([int(sel.sum()) for sel, _ in acc[i]]); top = np.percentile(n, 90)
+            good = [sel for (sel, _), c in zip(acc[i], n) if c >= 0.5 * top]       # frames where the letters stand out
+            if good and top >= 200:
+                g['mask'] = ((np.mean(good, axis=0) >= 0.5) * 255).astype(np.uint8)
+                # the shadow: fitted on the frames with the flattest surround, with this mask as the letters
+                y0 = g['rect'][1]; off = y0 - max(0, y0 - 60)
+                crops = [c for _, c in acc[i]][:: max(1, len(acc[i]) // 60)]
+                big = np.zeros(crops[0].shape[:2], np.uint8); big[off:off + g['mask'].shape[0]] = g['mask']
+                fit = captions.fit_shadow(crops, masks=[big] * len(crops))
+                g['shadow'] = fit['shadow']; g['fit'] = {k: fit.get(k) for k in ('err', 'base', 'n', 'reach')}
+        out[f'm{i}'] = g['mask']; out[f's{i}'] = np.array(g['shadow'] or [], np.float64); out[f'c{i}'] = np.array(g['core'])
+        print('still', i, 'letters', int((g['mask'] > 0).sum()), 'px, shadow', g['shadow'], g.get('fit'), flush=True)
+    np.savez_compressed(cf, **out)
+def still_erase(I, t):
+    """The frame with its "still" texts erased (their one mask, the shadow divided out)."""
+    O = I
+    for g in STILL:
+        if not still_on(g, t) or not g['mask'].any(): continue
+        x0, y0, x1, y1 = g['rect']; Y0, Y1 = max(0, y0 - 60), min(H, y1 + 60)
+        big = np.zeros((Y1 - Y0, x1 - x0), np.uint8); big[y0 - Y0:y0 - Y0 + g['mask'].shape[0]] = g['mask']
+        c = captions.erase_mask(O[Y0:Y1, x0:x1], big, g['shadow'], g['core'], 0 if g['shadow'] else g.get('grow', 4))
+        if O is I: O = I.copy()
+        O[Y0:Y1, x0:x1] = c
+    return O
 def raw_sel(L, z, thr_scale=1.0):
     """The zone's letter pixels in one frame (before grow), 255 / 0, cropped to the zone rect; None for an empty rect."""
     t0, t1, x0, y0, x1, y1, mode, k, thr, grow = z[:10]; lmin = z[10] if len(z) > 10 else 150
     x0, y0, x1, y1 = max(0, x0), max(0, y0), min(W, x1), min(H, y1)
     if x1 <= x0 or y1 <= y0: return None
-    if mode == 'full': return np.full((y1 - y0, x1 - x0), 255, np.uint8)
+    if mode in ('full', 'exact'): return np.full((y1 - y0, x1 - x0), 255, np.uint8)
+    if mode == 'cap': return None                 # erased as a whole crop (cap_erase), not through a mask
     p = k; X0, Y0, X1, Y1 = max(0, x0 - p), max(0, y0 - p), min(W, x1 + p), min(H, y1 + p)
     c = L[Y0:Y1, X0:X1]
     # light = white / yellow letters (outline or shadow is caught by grow), dark = dark letters on a light scene
@@ -41,7 +124,7 @@ def static_masks(want=None, share=None, cf=None):
     """Zone index -> letter mask of a static text (pixels hit in >= share of the window's frames), cached next to ZONES."""
     import os
     if want is None:
-        want = {i: z for i, z in enumerate(Z) if len(z) > 11 and z[11] and z[6] != 'full'}; cf = Zf + '.static.npz'
+        want = {i: z for i, z in enumerate(Z) if len(z) > 11 and z[11] and z[6] not in ('full', 'exact', 'cap')}; cf = Zf + '.static.npz'
     if not want: return {}
     if cf and os.path.exists(cf) and os.path.getmtime(cf) >= os.path.getmtime(Zf):
         d = np.load(cf); return {int(k): d[k] for k in d.files}
@@ -77,7 +160,7 @@ def frame_mask(I, t, split=False):
         sel = raw_sel(L, z)
         if sel is None: continue
         x0, y0, grow = max(0, z[2]), max(0, z[3]), z[9]
-        for part, out in ((sel, M), (ST.get(i), MS)):
+        for part, out in ((sel, MS if z[6] == 'exact' else M), (ST.get(i), MS)):      # exact: this frame only, as the static part
             if part is None or part.shape != sel.shape: continue
             g = np.zeros((H, W), np.uint8); g[y0:y0 + sel.shape[0], x0:x0 + sel.shape[1]] = part
             if grow: g = cv2.dilate(g, ker(2 * grow + 1))
@@ -90,6 +173,9 @@ def pushpull(I, Wt, need=0.35):
     nums, dens = [I * Wt[..., None]], [Wt]
     for _ in range(levels): nums.append(cv2.pyrDown(nums[-1])); dens.append(cv2.pyrDown(dens[-1]))
     F = nums[-1] / np.maximum(dens[-1], 1e-6)[..., None]
+    hole = dens[-1] < 1e-4                        # a hole wider than the coarsest level reaches: its middle had no known
+    if hole.any() and not hole.all():             # pixel at all and came out black; it takes the known pixels' mean
+        F[hole] = nums[-1].sum((0, 1)) / float(dens[-1].sum())
     for l in range(levels - 1, -1, -1):
         up = cv2.pyrUp(F, dstsize=(nums[l].shape[1], nums[l].shape[0]))
         a = np.clip(dens[l] / need, 0, 1)[..., None]
@@ -123,13 +209,14 @@ def frames():
         if len(b) < n: break
         yield i, np.frombuffer(b, np.uint8).reshape(H, W, 3); i += 1
 ST = static_masks()
+still_prepare()
 if '--static-only' in sys.argv: sys.exit()
 if '--check' in sys.argv:
     # QA: letters of the OLD text still visible in a finished plate (OUT = the plate). For every letter zone, its static
     # letter mask (hit in >= 30 % of the window's source frames) is compared with a 3x more sensitive detection on the
     # plate; a frame where > MIN px of the old letters still stand out is listed (and a crop saved next to the plate).
     MIN = int(sys.argv[sys.argv.index('--check') + 1]) if len(sys.argv) > sys.argv.index('--check') + 1 and sys.argv[sys.argv.index('--check') + 1].isdigit() else 40
-    CK = static_masks({i: z for i, z in enumerate(Z) if z[6] != 'full' and z[1] - z[0] >= 0.5}, 0.3)
+    CK = static_masks({i: z for i, z in enumerate(Z) if z[6] not in ('full', 'exact', 'cap') and z[1] - z[0] >= 0.5}, 0.3)
     p = subprocess.Popen(['ffmpeg', '-v', 'error', '-i', OUT, '-f', 'rawvideo', '-pix_fmt', 'bgr24', '-'], stdout=subprocess.PIPE)
     j = 0; hits = collections.defaultdict(list)
     while True:
@@ -137,8 +224,13 @@ if '--check' in sys.argv:
         if len(b) < W * H * 3: break
         t = j / FPS; j += 1
         act = [i for i in CK if on(Z[i], t)]
-        if not act: continue
+        capz = [i for i in CAPZ if on(Z[i], t)]
+        if not act and not capz: continue
         I = np.frombuffer(b, np.uint8).reshape(H, W, 3); L = cv2.cvtColor(I, cv2.COLOR_BGR2GRAY)
+        for i in capz:                                # an outlined caption line still found on the plate = old letters
+            x0, y0, x1, y1 = cap_rect(Z[i])
+            r = captions.find(I[y0:y1, x0:x1], Z[i][7], CAP.get('colors') or ())
+            if r['lines']: hits[i].append((round(t, 2), int((r['mask'] > 0).sum())))
         for i in act:
             r = raw_sel(L, Z[i], 0.35)
             if r is None or r.shape != CK[i].shape: continue
@@ -159,6 +251,9 @@ if '--check' in sys.argv:
             for z in Z:
                 if on(z, k / FPS):
                     g = z[9] + 24; ok[max(0, z[3] - g):z[5] + g, max(0, z[2] - g):z[4] + g] = 1
+            for q in STILL:                               # a "still" text is erased inside its rect (+ its shadow's reach)
+                if still_on(q, k / FPS):
+                    x0, y0, x1, y1 = q['rect']; ok[max(0, y0 - 36):y1 + 36, max(0, x0 - 36):x1 + 36] = 1
         n = int((d & (ok == 0)).sum())
         if n > 300: off.append((round(j / FPS, 2), n))
     for b in iter(lambda: p.stdout.read(W * H * 3), b''):
@@ -176,7 +271,7 @@ if '--at' in sys.argv:
     sm = lambda x: cv2.resize(x, (W // 2, H // 2), interpolation=cv2.INTER_AREA)
     for t in [float(x) for x in sys.argv[sys.argv.index('--at') + 1].split(',')]:
         subprocess.run(['ffmpeg', '-v', 'error', '-y', '-ss', str(t), '-i', SRC, '-frames:v', '1', f'{OUT}/src_{t}.png'], check=True)
-        I = cv2.imread(f'{OUT}/src_{t}.png'); M = frame_mask(I, t); O = clean(I, M)
+        I = cv2.imread(f'{OUT}/src_{t}.png'); M = frame_mask(I, t); O = clean(still_erase(cap_erase(I, t), t), M)
         Mv = cv2.cvtColor(M if M is not None else np.zeros((H, W), np.uint8), cv2.COLOR_GRAY2BGR)
         cv2.imwrite(f'{OUT}/plate_{t}.png', O)
         cv2.imwrite(f'{OUT}/cmp_{t}.jpg', np.hstack([sm(I), sm(O), sm(Mv)]), [cv2.IMWRITE_JPEG_QUALITY, 82])
@@ -196,7 +291,7 @@ def emit(j):
     buf.pop(j - R, None)
 for i, I in frames():
     th = thumb(I); cut = prev is not None and float(np.abs(th - prev).mean()) > CUT; prev = th
-    buf[i] = (I, *frame_mask(I, i / FPS, split=True), cut); last = i
+    buf[i] = (still_erase(cap_erase(I, i / FPS), i / FPS), *frame_mask(I, i / FPS, split=True), cut); last = i     # masks from the source frame
     while nxt <= i - R: emit(nxt); nxt += 1
     if i % 150 == 0: print('frame', i, time.strftime('%H:%M:%S'), flush=True)
 while nxt <= last: emit(nxt); nxt += 1

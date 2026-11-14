@@ -2,6 +2,7 @@
 usage: python3 build_math.py RB.json SRC_URL OUT_PREFIX CFG.json
  -> OUT_PREFIX.black.json / .white.json (overlay over solid black / white) + OUT_PREFIX.zones.json"""
 import json, re, sys
+from layers import orig_rect
 rb = json.load(open(sys.argv[1])); SRC = sys.argv[2]; OUT = sys.argv[3]
 els = rb['elements']; D = rb['duration']
 cfg = json.load(open(sys.argv[4])) if len(sys.argv) > 4 else {}
@@ -77,6 +78,16 @@ def layer(track, blur, overlay, shapes):
         {"type": "composition", "track": 2, "time": 0, "duration": D, "mask_mode": "alpha", "elements": shapes}]}
 def clean_text(e):
     return {k: v for k, v in e.items() if v is not None}
+def caption_plate(e):
+    """The build's caption plate: a composition of three = the blurred source, its mask, and on top a box filled
+    'rgba(r,g,b,a)' with a dark colour. Pure black for a source with solid black boxes; the source plate's own colour
+    for a translucent plate ('rgba(34,34,34,0.75)' on one test video). Only 'rgba(0,0,0' was taken as a box before, so
+    such a build lost its plates with the frosted bands and the new line stood bare over the old plate. Dark = luma
+    under 128, the builder's own line between a dark plate and a light one; a light plate stays out, as before."""
+    if e.get('type') != 'composition' or len(e.get('elements', [])) != 3: return False
+    c = str(e['elements'][2].get('fill_color', ''))
+    m = re.fullmatch(r'rgba\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*[\d.]+\s*\)', c)
+    return c.startswith('rgba(0,0,0') or bool(m) and 0.299 * int(m[1]) + 0.587 * int(m[2]) + 0.114 * int(m[3]) < 128
 dark, light, boxes, texts, app, keep = [], [], [], [], [], []
 plates = []
 for e in els:
@@ -94,8 +105,10 @@ for e in els:
     if (e.get('name') or '').startswith('patch sticker'): continue          # graphic card: keep the original
     if (e.get('name') or '').startswith('app page'):
         if any(r[6:] == ['B'] for r in cfg.get('caption_rects', [])): continue   # white app covers: the black box stays instead
+        # (a source with translucent plates, kind 'P', needs no such test: every band collected in `app` is dropped
+        # further down, the plate erased the text under it; here 'B' only keeps the cover out of the «dropped bands» line)
         app.append(e); continue
-    if ty == 'composition' and len(e.get('elements', [])) == 3 and str(e['elements'][2].get('fill_color', '')).startswith('rgba(0,0,0'):
+    if caption_plate(e):
         b = e['elements'][2]                                                   # caption plate: blurred source + dark box
         plates.append((e['time'], e['duration'], b))
         boxes.append({"type": "shape", "time": e['time'], "duration": e['duration'], "x": b['x'], "y": b['y'],
@@ -125,7 +138,7 @@ for e in els:
             texts.extend(parts); continue
     if ty == 'text':
         if tr in cfg.get('drop_text_tracks', []): continue
-        texts.append(dict(clean_text(e), **cfg.get('text_set', {}).get(str(tr), {}))); continue
+        texts.append(clean_text(dict(clean_text(e), **cfg.get('text_set', {}).get(str(tr), {})))); continue   # a null in text_set drops the key
     keep.append(e)
 # ---- math route: the old old text is erased in a local "plate" (maskfill.py), so this body keeps only
 # what goes ON TOP of the picture (new text, boxes, kept stickers, app bands). It is rendered twice, over solid black
@@ -218,6 +231,9 @@ if CP:
     widest = max(font.getlength(t) for t in txt) / 100
     fs = min(fs, (CP.get('max_width', 88) / 100 * W_) / (widest + 2 * padx))
     Y0, Y1 = CP['box']; YC = (Y0 + Y1) / 2
+    # kind 'P' (an old translucent plate): auto_zones.py gives such a source no caption_pages. With a hand caption_pages,
+    # «all» counts the plate as an old box (the page's box is solid and is widened over it, a taller plate is erased);
+    # under «B» it is not an old box and the caption_rects loop below erases it whole
     OLD = [r for r in cfg.get('caption_rects', []) if CP.get('old_boxes', 'B') == 'all' or r[6:] == ['B']]
     P = [{'a': T0 + float(pg[0]['time']), 'c': T0 + float(pages[i + 1][0]['time']) if i + 1 < len(pages) else T0 + TD,
           'txt': txt[i], 'y0': Y0, 'y1': Y1} for i, pg in enumerate(pages)]
@@ -299,6 +315,12 @@ for t, d, x0, y0, x1, y1, *k in ([] if cfg.get('caption_union') else cfg.get('ca
             if on: fills.append(dict(patch(a, c - a, x0, y0, x1, y1, feather='0 vmin', radius='0 vmin'), fill_color='#000000'))
             else: Z.append([a, c] + px(x0 - 0.6, y0 - 0.3, x1 + 0.6, y1 + 0.3) + ['full', 0, 0, 3])   # old black box + letters
         continue
+    if k == ['P']:
+        # an old translucent plate: the build's new plate is translucent too, so unlike a solid black box over an old black
+        # box it hides nothing; the old letters showed through it. The whole plate is erased for all its time, a new page
+        # on screen or not (same margin as an old black box: its antialiased edge must not feed the fill)
+        # «exact»: on its own frames only (a full zone is also erased 2 frames before and after it)
+        Z.append([t, t + d] + px(x0 - 0.6, y0 - 0.3, x1 + 0.6, y1 + 0.3) + ['exact', 0, 0, 3]); continue
     # a tall T rect is an old translucent plate with its text (segs.py): erase the plate too, not only the letters
     Z.append([t, t + d] + px(x0, y0, x1, y1) + (['full', 0, 0, 3] if (y1 - y0) > 7 else ['light', 25, 70, 4]))
 for p in cfg.get('dark_patches', []):
@@ -313,6 +335,8 @@ for t, d, *_ in cfg.get('disc_segments', []):
     Z.append([t, t + d] + px(*DB) + ['light', 15, 70, 3])
 for t, d, x0, y0, x1, y1, col, fe in cfg.get('solid_patches', []):
     fills.append(dict(patch(t, d, x0, y0, x1, y1, feather=fe, radius='0.6 vmin'), fill_color=col))
+# box_style restyles a new box into a solid black one where an old black box ('B') is on screen, to cover it. An old
+# translucent plate ('P') is erased instead, so the new box keeps the look the build gave it (the source's own plate)
 BW = [(r[0], r[0] + r[1]) for r in cfg.get('caption_rects', []) if r[6:] == ['B']]
 BS = cfg.get('box_style', {})
 for q in boxes:
@@ -329,29 +353,6 @@ app = []
 print('dropped bands (track, time, dur):', dropped)
 
 
-def opaque_span(shape):
-    """A linear-gradient alpha mask -> (axis, lo %, hi %) of its opaque part; axis 'x' when it runs left to right."""
-    stops = shape.get('fill_color')
-    if not isinstance(stops, list): return None
-    on = [float(str(s['offset']).rstrip('%')) for s in stops if str(s.get('color', '')).replace(' ', '').endswith(',1)')]
-    if not on: return None
-    horiz = str(shape.get('fill_x0', '')) != str(shape.get('fill_x1', '')) and shape.get('fill_x0') is not None
-    return ('x' if horiz else 'y', min(on), max(on))
-
-
-def orig_rect(e):
-    """Where a kept «orig …» layer shows the source's own pixels: [x0, y0, x1, y1] % of the frame (gradient masks)."""
-    r = {'x': [0.0, 100.0], 'y': [0.0, 100.0]}
-    def walk(el):
-        for s in el.get('elements', []):
-            if s.get('type') == 'shape' and s.get('mask_mode') == 'alpha':
-                sp = opaque_span(s)
-                if sp: r[sp[0]] = [max(r[sp[0]][0], sp[1]), min(r[sp[0]][1], sp[2])]
-            if s.get('type') == 'composition': walk(s)
-    walk(e)
-    return [r['x'][0], r['y'][0], r['x'][1], r['y'][1]]
-
-
 # A cfg is measured on one build. The next build of the same video may place things differently (2026-11-13: one build
 # lifted a price tag off the old legal line and drew a new one; the next kept the original tag as source pixels, which
 # also carry the old letters crossing it). Source pixels kept on top of a zone the plate erases bring those letters
@@ -362,6 +363,7 @@ for e in keep:
     ox0, oy0, ox1, oy1 = px(*orig_rect(e)); t0, t1 = float(e['time']), float(e['time']) + float(e['duration'])
     area = max(1, (ox1 - ox0) * (oy1 - oy0))
     for z in Z:
+        if z[6] == 'cap': continue                  # a caption band: only letters found in it are touched, not the rect
         if z[0] >= t1 - 0.05 or z[1] <= t0 + 0.05: continue
         iw, ih = min(ox1, z[4]) - max(ox0, z[2]), min(oy1, z[5]) - max(oy0, z[3])
         if iw > 0 and ih > 0 and iw * ih / area > 0.15:
@@ -391,9 +393,11 @@ for bg, tag in (('#000000', 'black'), ('#ffffff', 'white')):
 # >= static_share of the window's frames in every frame of it (zone field 12; zones_extra may set its own).
 SS = cfg.get('static_share', 0)
 for z in Z if SS else []:
-    if z[6] != 'full' and z[1] - z[0] >= 0.5 and len(z) <= 11:
+    if z[6] not in ('full', 'exact', 'cap') and z[1] - z[0] >= 0.5 and len(z) <= 11:
         if len(z) == 10: z.append(150)
         z.append(SS)
-json.dump({'src': SRC, 'w': W_, 'h': H_, 'fps': rb.get('frame_rate', 30), 'duration': D, 'zones': Z},
+STILL = [dict({k: v for k, v in g.items() if k not in ('rect_pct', 'times')}, rect=px(*g['rect_pct']), times=[[t, t + d] for t, d in g['times']])
+         for g in cfg.get('still', [])]
+json.dump({'src': SRC, 'w': W_, 'h': H_, 'fps': rb.get('frame_rate', 30), 'duration': D, 'zones': Z, 'cap': cfg.get('cap'), 'still': STILL},
           open(f'{OUT}.zones.json', 'w'), indent=0)
 print(OUT, 'zones', len(Z), 'app', len(app), 'fills', len(fills), 'boxes', len(boxes), 'texts', len(texts), 'keep', len(keep))
