@@ -1,0 +1,19 @@
+# Unit tests of the engine on drawn frames (tests/, no media files, no secrets). Runs on every push; it is a separate
+# workflow from erase.yml on purpose: that one holds the job secrets and must never run on anything but a manual start.
+name: test
+on:
+  push:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+          cache: pip
+      - run: pip install -q -r requirements.txt
+      - run: python -m unittest discover -s tests -v

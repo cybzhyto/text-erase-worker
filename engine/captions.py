@@ -229,25 +229,34 @@ def fit_shadow(crops, cap_h=0, colors=(), masks=None):
     out['reach'] = int(sorted(reach)[len(reach) // 2]) if reach else 0
     if not dk or sorted(dk)[len(dk) // 2] < 0.04:
         return out                                # no shadow past the outline
+    # the search: one blur per (frame, radius, sigma); strength and offset are cheap on top of it. Each frame is cut to
+    # the letters' surround and its ring pixels thinned to 6000 at most, so the whole grid takes a second or two
+    rng = np.random.default_rng(1); prep = []
+    for _, bg, L, d, box in use:
+        ys, xs = np.nonzero(d <= 40); y0, y1, x0, x1 = max(0, ys.min() - 8), ys.max() + 9, max(0, xs.min() - 8), xs.max() + 9
+        Lc, dc, bc = L[y0:y1, x0:x1], d[y0:y1, x0:x1], box[y0:y1, x0:x1]
+        idx = np.flatnonzero((dc >= out['core']) & (dc <= 32) & bc)
+        if idx.size > 6000: idx = rng.choice(idx, 6000, replace=False)
+        prep.append((bg, Lc.ravel()[idx], dc, idx))
+    As = np.array((0.3, 0.4, 0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.9, 1.0), np.float32)
     best = None
     for r in (2.5, 3.0, 3.5, 4.0, 5.0, 6.0):
-        for A in (0.3, 0.4, 0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.9, 1.0):
-            for sig in (4, 5, 6, 7, 8, 9, 10, 11, 12, 14, 16):
-                for dy in (0, 1.5, 3, 4.5, 6):
-                    err = 0.0
-                    for _, bg, L, d, box in use:
-                        a = shadow_alpha(d, (r, A, sig, dy))
-                        s = (d >= out['core']) & (d <= 32) & box
-                        e = np.abs(L[s] / np.maximum(1 - a[s], 0.2) - bg)
-                        e = np.sort(e)[: max(1, int(0.8 * e.size))]      # other content near the text is an outlier
-                        err += float(e.mean())
-                    err /= len(use)
-                    if best is None or err < best[0]: best = (err, [r, A, float(sig), dy])
+        for sig in (4, 5, 6, 7, 8, 9, 10, 11, 12, 14, 16):
+            G = [cv2.GaussianBlur((dc <= r).astype(np.float32), (0, 0), sig) for _, _, dc, _ in prep]
+            for dy in (0, 1.5, 3, 4.5, 6):
+                err = np.zeros(len(As), np.float32)
+                for (bg, Lv, dc, idx), g in zip(prep, G):
+                    gs = cv2.warpAffine(g, np.float32([[1, 0, 0], [0, 1, dy]]), (g.shape[1], g.shape[0]), flags=cv2.INTER_LINEAR,
+                                        borderMode=cv2.BORDER_REPLICATE).ravel()[idx] if dy else g.ravel()[idx]
+                    e = np.abs(Lv[None, :] / np.maximum(1 - As[:, None] * gs[None, :], 0.2) - bg)        # strengths x pixels
+                    k = max(1, int(0.8 * e.shape[1]))                    # other content near the text is an outlier
+                    err += np.partition(e, k - 1, axis=1)[:, :k].mean(1)
+                err /= len(prep); j = int(np.argmin(err))
+                if best is None or err[j] < best[0]: best = (float(err[j]), [r, round(float(As[j]), 2), float(sig), dy])
     base = 0.0                                    # the same measure with no shadow model
-    for _, bg, L, d, box in use:
-        s = (d >= out['core']) & (d <= 32) & box
-        e = np.sort(np.abs(L[s] - bg))[: max(1, int(0.8 * s.sum()))]; base += float(e.mean())
-    base /= len(use)
+    for bg, Lv, dc, idx in prep:
+        e = np.abs(Lv - bg); k = max(1, int(0.8 * e.size)); base += float(np.partition(e, k - 1)[:k].mean())
+    base /= len(prep)
     out['err'] = round(best[0], 2); out['base'] = round(base, 2)
     if best[0] <= 3.0 and best[0] <= 0.5 * base: out['shadow'] = best[1]
     return out
