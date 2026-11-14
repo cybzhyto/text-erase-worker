@@ -254,6 +254,11 @@ def main():
         left = [r for r in chk['residue'] if r[1] == 'cap']
         if left and not spec.get('allowResidue'):
             raise RuntimeError(f'old caption letters left on the plate in {sum(r[4] for r in left)} frames (first at {min(r[2] for r in left):.2f} s)')
+        # the same for a text erased with one mask for all of its time (the legal line): its letters still standing out
+        # of the plate on 3 or more of the sampled frames where they stood out of the source
+        left = [r for r in chk['residue'] if r[1] == 'still' and r[4] >= 3]
+        if left and not spec.get('allowResidue'):
+            raise RuntimeError(f'old letters of a line that stays through the video are left on the plate in {sum(r[4] for r in left)} sampled frames')
 
         if a.plate_only:
             step(f'done (plate only): {W}/plate.mp4'); return

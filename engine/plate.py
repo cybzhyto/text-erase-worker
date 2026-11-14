@@ -238,6 +238,31 @@ if '--check' in sys.argv:
             if n > MIN: hits[i].append((round(t, 2), n))
     for i, h in sorted(hits.items()):
         z = Z[i]; print('zone %d %s %.2f-%.2f rect %s: %d frames, worst %s' % (i, z[6], z[0], z[1], z[2:6], len(h), max(h, key=lambda q: q[1])))
+    hits = dict(hits)
+    # a "still" text (the legal line): on the frames where its letters stood out of the source (at least half of the
+    # mask), how many of the mask's pixels still stand out of the plate. Listed as zone 1000 + its index, mode still
+    for gi, g in enumerate(STILL):
+        if not g['mask'].any(): continue
+        x0, y0, x1, y1 = g['rect']; k = g.get('k', 15); Y0, Y1 = max(0, y0 - k), min(H, y1 + k); X0, X1 = max(0, x0 - k), min(W, x1 + k)
+        t_lo, t_hi = min(a for a, _ in g['times']), max(b for _, b in g['times'])
+        def rows(path):
+            return subprocess.Popen(['ffmpeg', '-v', 'error', '-ss', f'{t_lo:.6f}', '-t', f'{t_hi - t_lo:.6f}', '-i', path, '-vf',
+                                     f'fps=10,format=gray,crop={X1 - X0}:{Y1 - Y0}:{X0}:{Y0}', '-f', 'rawvideo', '-pix_fmt', 'gray', '-'], stdout=subprocess.PIPE)
+        ps, pp = rows(SRC), rows(OUT); n = (X1 - X0) * (Y1 - Y0); m = g['mask'] > 0; need = 0.5 * m.sum(); bad = []; j = 0
+        def sel(b):
+            L = np.frombuffer(b, np.uint8).reshape(Y1 - Y0, X1 - X0)
+            return ((cv2.morphologyEx(L, cv2.MORPH_TOPHAT, ker(k)) > g.get('thr', 40)) & (L > g.get('lmin', 150)))[y0 - Y0:y1 - Y0, x0 - X0:x1 - X0]
+        while True:
+            a, b = ps.stdout.read(n), pp.stdout.read(n)
+            if len(a) < n or len(b) < n: break
+            t = t_lo + j / 10; j += 1
+            if still_on(g, t) and (sel(a) & m).sum() >= need:
+                left = int((sel(b) & m).sum())
+                if left >= 0.15 * m.sum(): bad.append((round(t, 2), left))
+        ps.kill(); pp.kill()
+        if bad:
+            hits[1000 + gi] = bad
+            print('zone %d still %.2f-%.2f rect %s: %d frames, worst %s' % (1000 + gi, t_lo, t_hi, g['rect'], len(bad), max(bad, key=lambda q: q[1])))
     if not hits: print('check: no old letters left above', MIN, 'px')
     # Part 2, blur off the text: plate vs source outside the rects (+ grow + 24 px) of the zones active in this frame or
     # in a neighbour frame of the same shot (where the union may borrow). Any frame with > 300 changed px is listed: that
