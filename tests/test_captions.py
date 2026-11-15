@@ -91,6 +91,20 @@ class Find(unittest.TestCase):
             self.assertTrue(any(i[3] - i[1] > 0.6 * ch for i in q), kind)
             for i in q: self.assertTrue((r['mask'][lab == i[6]] > 0).all(), (kind, i))
 
+    def test_a_last_capital_with_a_paler_ring_joins_the_line(self):
+        f, bb = draw(ground('white'), 'BRING THE BLUE KITE')
+        ch = captions.find(f, 0)['cap_h']
+        isl, lab = captions.islands(f)
+        last = max((q for q in isl if q[3] - q[1] > 0.72 * ch), key=lambda q: q[2])
+        c = (lab == last[6]).astype(np.uint8)
+        ring = (cv2.dilate(c, captions.K7) > 0) & (cv2.dilate(c, captions.K3) == 0)
+        ys, xs = np.nonzero(ring); pale = xs > np.percentile(xs, 60)          # part of its ring is not dark
+        g = f.copy(); g[ys[pale], xs[pale]] = (175, 175, 175)
+        q = [x for x in captions.islands(g)[0] if x[6] == last[6]][0]
+        self.assertTrue(captions.RING_IN <= q[5] < captions.RING, q)
+        r = captions.find(g, ch)
+        self.assertTrue((r['mask'][lab == last[6]] > 0).all())
+
     def test_the_counters_of_an_app_pages_own_words_are_not_the_captions(self):
         page = Image.fromarray(ground('white')); d = ImageDraw.Draw(page)
         small = ImageFont.load_default(size=34)
@@ -168,11 +182,16 @@ class LeftGlyphs(unittest.TestCase):
         q = draw(ground('tan'), 'WHERE IS THE KEY?', shadow=None)[0]
         left = ground('tan').copy(); x0 = bb[2] - int(0.6 * ch); left[:, x0:] = q[:, x0:]       # only the «?» stays
         self.assertTrue(captions.left_glyphs(f, left, ch))
+        part = left.copy(); part[:, x0:x0 + int(0.35 * ch)] = ground('tan')[:, x0:x0 + int(0.35 * ch)]   # half its ring gone
+        self.assertTrue(captions.left_glyphs(f, part, ch))
         self.assertEqual(captions.left_glyphs(f, ground('tan'), ch), [])                       # a clean plate
         page = Image.fromarray(ground('tan')); dr = ImageDraw.Draw(page)                        # a radio button 2 capitals past it
         cx = bb[2] + 2 * ch; dr.ellipse([cx - 22, 98, cx + 22, 142], fill=(0, 0, 0)); dr.ellipse([cx - 14, 106, cx + 14, 134], fill=(255, 255, 255))
         self.assertEqual(captions.left_glyphs(f, np.asarray(page), ch), [])
         self.assertEqual(captions.left_glyphs(ground('tan'), left, ch), [])                    # no caption in the source
+        gap = ground('white'); gap[52:126, 300:400] = 40; gap[62:116, 318:382] = 253          # a white gap ringed by a dark photo, off the line
+        fw, _ = draw(ground('white'), 'WHERE IS THE KEY?')
+        self.assertEqual(captions.left_glyphs(fw, gap, ch), [])
 
 class Fill(unittest.TestCase):
     def test_a_hole_wider_than_the_pyramid_reaches_is_not_black(self):

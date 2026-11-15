@@ -95,13 +95,14 @@ def find(bgr, cap_h=0, colors=()):
         # strokes): filling it wiped the app's words next to the caption
         inside = [q for q in isl if q[5] >= RING_IN and q[3] - q[1] <= 1.3 * cap_h and X0 <= (q[0] + q[2]) / 2 <= X1
                   and top - m <= (q[1] + q[3]) / 2 <= base + m and (q in run or capital(q) or counter(q) or punct(q))]
-        # past the first / last capital only punctuation joins, starting within 0.36 capital heights of the glyph before
-        # it. A ringed dot in the middle of the row next to the text (a radio button, the counter of a digit of the page
-        # under the caption) is not the caption's
+        # past the first / last strong capital only punctuation and capitals with a less dark ring join (a last «E» whose
+        # ring was 0.69 dark stayed on the plate), starting within 0.36 capital heights of the glyph before it. A ringed
+        # dot in the middle of the row next to the text (a radio button, the counter of a digit of the page under the
+        # caption) is not the caption's
         ends = list(inside)
         for _ in range(6):
             lo, hi = min([X0] + [q[0] for q in ends]), max([X1] + [q[2] for q in ends])
-            add = [q for q in isl if q not in ends and q[5] >= RING_IN and punct(q) and top - m <= (q[1] + q[3]) / 2 <= base + m
+            add = [q for q in isl if q not in ends and q[5] >= RING_IN and (punct(q) or capital(q)) and top - m <= (q[1] + q[3]) / 2 <= base + m
                    and (0 <= lo - q[2] <= 0.36 * cap_h or 0 <= q[0] - hi <= 0.36 * cap_h)]
             if not add: break
             ends += add
@@ -121,9 +122,13 @@ def left_glyphs(src, plate, cap_h, colors=()):
     cap_h = r['cap_h']; isl, _ = islands(plate, colors); out = []
     for q in isl:
         h, w = q[3] - q[1], q[2] - q[0]
-        if q[5] < RING or not 0.45 * cap_h <= h <= 1.3 * cap_h or w > 1.3 * cap_h: continue
-        cx, cy = (q[0] + q[2]) / 2, (q[1] + q[3]) / 2
-        if any(L[0] - 0.25 * cap_h <= cx <= L[2] + 0.25 * cap_h and L[1] <= cy <= L[3] for L in r['lines']): out.append(q[:5])
+        # its ring is often part gone (the fill of the letter next to it took some of the outline): 0.4 of it dark is enough
+        if q[5] < 0.4 or not 0.45 * cap_h <= h <= 1.3 * cap_h or w > 1.3 * cap_h: continue
+        cx = (q[0] + q[2]) / 2; m = round(0.45 * cap_h)
+        # in the line, and standing on it as a glyph does: its top at the capitals' top or its foot on the base line
+        # (a white gap between two dark things of an app page's picture is ringed and letter sized too, but sits anywhere)
+        if any(L[0] - 0.25 * cap_h <= cx <= L[2] + 0.25 * cap_h and (abs(q[1] - (L[1] + m)) <= 0.2 * cap_h or abs(q[3] - (L[3] - m)) <= 0.2 * cap_h)
+               for L in r['lines']): out.append(q[:5])
     return out
 
 
