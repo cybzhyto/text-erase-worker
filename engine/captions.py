@@ -77,16 +77,27 @@ def find(bgr, cap_h=0, colors=()):
         m = int(round(0.45 * cap_h))
         top = float(np.median([q[1] for q in run])); base = float(np.median([q[3] for q in run]))
         X0, X1 = min(q[0] for q in run), max(q[2] for q in run)
-        inside = [q for q in isl if q[5] >= RING_IN and q[3] - q[1] <= 1.3 * cap_h and X0 <= (q[0] + q[2]) / 2 <= X1
-                  and top - m <= (q[1] + q[3]) / 2 <= base + m]             # between the capitals: counters, commas, dashes
-        # past the first / last capital only punctuation joins, glyph by glyph: a small ringed island that sits on the
-        # base line (full stop, comma), hangs from the capitals' top (quote, apostrophe) or is a dash, and starts within
-        # 0.36 capital heights of the glyph before it. A ringed dot in the middle of the row next to the text (a radio
-        # button, the counter of a digit of the page under the caption) is not the caption's
+        # punctuation, glyph by glyph: a small ringed island that sits on the base line (full stop, comma), hangs from the
+        # capitals' top (quote, apostrophe) or is a dash; a taller one (no wider than a capital) that starts at the
+        # capitals' top (the hook of ?, the bar of !) or ends on the base line (¿, ¡, a lowercase letter). Without the
+        # taller kind the hook of a «?» that ends a line stayed on the plate (only its dot was erased).
         def punct(q):
             h, w = q[3] - q[1], q[2] - q[0]
-            if h > 0.6 * cap_h: return False
-            return abs(q[3] - base) <= 0.25 * cap_h or abs(q[1] - top) <= 0.2 * cap_h or (w >= 2.2 * h and top < (q[1] + q[3]) / 2 < base)
+            if h <= 0.6 * cap_h:
+                return abs(q[3] - base) <= 0.25 * cap_h or abs(q[1] - top) <= 0.2 * cap_h or (w >= 2.2 * h and top < (q[1] + q[3]) / 2 < base)
+            return h <= 0.98 * cap_h and w <= 0.9 * cap_h and (abs(q[1] - top) <= 0.15 * cap_h or abs(q[3] - base) <= 0.15 * cap_h)
+        def counter(q):                              # the hole of a capital (A, O, R): inside that capital's box
+            return any(p[0] - 2 <= q[0] and q[2] <= p[2] + 2 and p[1] - 2 <= q[1] and q[3] <= p[3] + 2 for p in run)
+        def capital(q):                              # a capital whose ring is less dark (part of it on dark ground)
+            return 0.72 * cap_h <= q[3] - q[1] <= 1.3 * cap_h and abs(q[1] - top) <= 0.2 * cap_h
+        # between the capitals: the capitals, their counters and punctuation. Any other ringed island there is the page
+        # under the caption (the white counter of a letter of an app screen's own text, ringed by that text's dark
+        # strokes): filling it wiped the app's words next to the caption
+        inside = [q for q in isl if q[5] >= RING_IN and q[3] - q[1] <= 1.3 * cap_h and X0 <= (q[0] + q[2]) / 2 <= X1
+                  and top - m <= (q[1] + q[3]) / 2 <= base + m and (q in run or capital(q) or counter(q) or punct(q))]
+        # past the first / last capital only punctuation joins, starting within 0.36 capital heights of the glyph before
+        # it. A ringed dot in the middle of the row next to the text (a radio button, the counter of a digit of the page
+        # under the caption) is not the caption's
         ends = list(inside)
         for _ in range(6):
             lo, hi = min([X0] + [q[0] for q in ends]), max([X1] + [q[2] for q in ends])
@@ -98,6 +109,22 @@ def find(bgr, cap_h=0, colors=()):
         lines.append(R)
         for q in ends: M[lab == q[6]] = 255
     return {'cap_h': int(cap_h), 'lines': lines, 'strong': len(strong), 'mask': M}
+
+
+def left_glyphs(src, plate, cap_h, colors=()):
+    """What an erase left of a caption: letter-sized ringed fill islands on the cleaned crop `plate` that sit in a caption
+    line of the source crop `src` (its rect, 0.25 capital heights wider). A glyph the line search did not take (the hook
+    of a «?» that ends a line, before 2026-11-15) stays whole on the plate while the line itself is gone, so a search for
+    lines on the plate does not see it. -> [[x0, y0, x1, y1, area]] in crop pixels."""
+    r = find(src, cap_h, colors)
+    if not r['lines']: return []
+    cap_h = r['cap_h']; isl, _ = islands(plate, colors); out = []
+    for q in isl:
+        h, w = q[3] - q[1], q[2] - q[0]
+        if q[5] < RING or not 0.45 * cap_h <= h <= 1.3 * cap_h or w > 1.3 * cap_h: continue
+        cx, cy = (q[0] + q[2]) / 2, (q[1] + q[3]) / 2
+        if any(L[0] - 0.25 * cap_h <= cx <= L[2] + 0.25 * cap_h and L[1] <= cy <= L[3] for L in r['lines']): out.append(q[:5])
+    return out
 
 
 # ---- erase: the letters are filled from the pixels around them; their soft shadow is undone, not blurred ----
@@ -156,8 +183,16 @@ def erase_mask(bgr, mask, shadow=None, core=7.0, grow=0, spur=True):
     # are still much darker than the background around the letters
     E0 = E.astype(np.float32); Lg = I @ np.float32([0.114, 0.587, 0.299])
     den = cv2.GaussianBlur(1 - E0, (0, 0), 6); bgl = cv2.GaussianBlur(Lg * (1 - E0), (0, 0), 6) / np.maximum(den, 1e-3)
-    sp = (~E) & (d <= core + grow + 9) & (Lg < 0.62 * bgl - 6) & (den > 0.05) if spur else None
-    if sp is not None and sp.any(): E |= cv2.dilate(sp.astype(np.uint8), K3) > 0
+    sp = (~E) & (d <= core + grow + 20) & (Lg < 0.62 * bgl - 6) & (den > 0.05) if spur else None
+    if sp is not None and sp.any():
+        # only dark runs that hang on the outline and end within 9 px of it (a tip of the outline is that short). Dark
+        # things of the picture that reach further (an app screen's own words under the caption, a cup's rim) are not
+        # the caption's: taking their first 9 px wiped half of each word
+        n, lb = cv2.connectedComponents(sp.astype(np.uint8), connectivity=8)
+        touch = np.unique(lb[sp & (cv2.dilate(E.astype(np.uint8), K3) > 0)]); touch = touch[touch > 0]
+        far = np.unique(lb[sp & (d > core + grow + 9)])
+        sp = np.isin(lb, np.setdiff1d(touch, far))
+        if sp.any(): E |= cv2.dilate(sp.astype(np.uint8), K3) > 0
     E = E.astype(np.float32)
     F = pushpull(I, 1 - E)
     Mf = np.clip(cv2.GaussianBlur(E, (0, 0), 1.5) * 1.6, 0, 1)[..., None]

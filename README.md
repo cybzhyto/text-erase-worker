@@ -18,12 +18,17 @@ GitHub Actions run (`.github/workflows/erase.yml`), started by the caller's auto
 - **Outlined captions** (zone mode `cap`, `engine/captions.py`): a top-hat mask needs letters that stand out of their
   surround, so white letters over a white coat or a white app page were missed. An outlined letter does not depend on
   the background: its fill is an island of the fill colour whose rim is the dark outline all the way round. Islands
-  as tall as a capital, two or more in a row, are a text line; punctuation joins glyph by glyph. A white coat, a
-  pearl, a radio button, the counters of dark page text are islands too, but nothing dark rings them or they do not
-  line up. The spoken word in another colour is a caption letter too: its fill colour is measured (`cap.colors`).
+  as tall as a capital, two or more in a row, are a text line; punctuation joins glyph by glyph (a «?» hook or a «!»
+  bar shorter than the capitals too). A white coat, a pearl, a radio button are islands too, but nothing dark rings
+  them or they do not line up; the white counters of an app page's own dark words under a caption are ringed, so
+  between the capitals only the capitals, their own counters and punctuation are the caption's. The spoken word in another colour is a caption letter too: its fill colour is measured (`cap.colors`).
   The letters' soft shadow is not blurred away: it is measured on the frames whose surround is flat and
   bright (the shadow = the text shape, blurred, moved down, at a strength) and **divided out**, so the picture keeps
-  its detail right up to the letters and only fill + outline are filled.
+  its detail right up to the letters and only fill + outline are filled. Dark pixels just past the outline (the tip
+  of an A or V) join the fill only when their dark run ends within 9 px of the outline: an app page's own words and a
+  cup's rim reach further and stay. On textured ground (knit, foliage) the filled letters still show as a soft patch:
+  the fill uses only the pixels around them, and mirrored detail, a matched copy of the ground nearby and a fill from
+  neighbour frames along the optical flow all looked worse on a known patch (2026-11-15).
 - **A text that stays through many shots** (the legal line, `still` in ZONES.json): its letters are found once, on the
   shots where they stand out, and that one mask erases the line in every frame of its time. On a white page such a
   line is only its grey shadow, and a zone measured on that shot alone found dark specks or nothing.
@@ -56,8 +61,10 @@ A job that would leave old words on screen stops with an error instead of delive
   the caption rows is bright too, but one large piece.
 - **a block nobody could place**, right after «measure zones»: a translated block with no read, no covered band and
   no box of its own (`cfg.auto.unplaced`) would keep its old text under the new one.
-- **letters left on the plate**, after «check plate»: an outlined caption line found on any plate frame, or the
-  letters of a `still` text still standing out on 3 or more sampled frames.
+- **letters left on the plate**, after «check plate»: an outlined caption line found on any plate frame, a single
+  outlined glyph left whole inside a source caption line on 2 or more sampled frames (`captions.left_glyphs`: what a
+  line search on the plate cannot see), or the letters of a `still` text still standing out on 3 or more sampled
+  frames.
 The top-hat zones' residue (`plate.py --check`) stays a note in the job record: it also fires on textured ground.
 A spec may set `allowUncovered` / `allowResidue` for a hand check.
 Not caught yet: a caption page of one letter, or one that no still of the caller shows and that is much larger than
