@@ -169,13 +169,22 @@ def erase(bgr, cap_h, colors=(), shadow=None, core=7.0, grow=0):
     No shadow model: the letters grown by `grow` px more are filled (a soft patch as wide as the shadow reached)."""
     r = find(bgr, cap_h, colors)
     if not r['lines']: return bgr, 0
-    return erase_mask(bgr, r['mask'], shadow, core, grow), len(r['lines'])
+    return erase_mask(bgr, r['mask'], shadow, core, grow, feather=FEATHER), len(r['lines'])
 
 
-def erase_mask(bgr, mask, shadow=None, core=7.0, grow=0, spur=True):
+# Feathered edge of a filled caption line: (R px, blur sigma). The fill is smooth and the ground around it often textured
+# (knit, foliage), so a sharp edge drew the letters' outline as a soft patch. The ground next to the hole fades into a
+# blurred copy over R px: a slightly wider but diffuse patch. 14 / 3.5 chosen on a knit ground; 22 px blurred the
+# picture above the line, 8 px still showed the letters' shape.
+FEATHER = (14, 3.5)
+
+
+def erase_mask(bgr, mask, shadow=None, core=7.0, grow=0, spur=True, feather=(0, 0)):
     """Erase the letters of `mask` (uint8, the letters' fill) from a BGR crop: shadow divided out, letters filled.
     spur=False: no pass for dark pixels past the fill (a fill that already reaches 12 px holds outline and shadow, and
-    that pass then takes dark lines of the picture next to the letters: a frame bar, a pill's edge)."""
+    that pass then takes dark lines of the picture next to the letters: a frame bar, a pill's edge).
+    feather=(R, sigma): the ground within R px of the hole blends into a blurred copy, fully at the hole's edge (FEATHER;
+    outlined caption lines only: a still headline sits next to kept page elements a blur would soften)."""
     if not mask.any(): return bgr
     d = cv2.distanceTransform((mask == 0).astype(np.uint8), cv2.DIST_L2, 5)
     I = bgr.astype(np.float32)
@@ -211,6 +220,16 @@ def erase_mask(bgr, mask, shadow=None, core=7.0, grow=0, spur=True):
         out[keep] = bgr[keep]
     else:
         keep = Mf[..., 0] == 0; out[keep] = bgr[keep]
+    R, sig = feather
+    if R > 0:
+        dE = cv2.distanceTransform((E < 0.5).astype(np.uint8), cv2.DIST_L2, 5)
+        w = np.clip(1 - dE / R, 0, 1); w = w * w * (3 - 2 * w)          # smoothstep: 1 at the hole's edge, 0 at R px
+        w[E >= 0.5] = 1.0
+        # an app page's own words next to the letters stay sharp (the same dark test as the fill's weight above)
+        dark = ((E < 0.5) & (Lg < 0.62 * bgl - 6)).astype(np.uint8)
+        if dark.any(): w *= 1 - np.clip(cv2.GaussianBlur(cv2.dilate(dark, K3, iterations=2).astype(np.float32), (0, 0), 1.5) * 1.6, 0, 1)
+        Bl = cv2.GaussianBlur(out, (0, 0), sig)
+        out = out * (1 - w[..., None]) + Bl * w[..., None]
     return np.clip(out + 0.5, 0, 255).astype(np.uint8)
 
 

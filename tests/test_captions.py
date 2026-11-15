@@ -144,6 +144,24 @@ class Erase(unittest.TestCase):
         out, n = captions.erase(f, captions.find(f, 0)['cap_h'], (), None, 7.0, 16)
         self.assertEqual(captions.find(out, 0)['lines'], [])
 
+    def test_the_edge_of_a_filled_line_fades_into_a_knit_ground_and_nothing_further_is_blurred(self):
+        yy, xx = np.mgrid[0:H, 0:W].astype(np.float32)                    # a knit-like ground: dense stitches, strong contrast
+        knit = 128 + 45 * np.sin(xx * 1.1) * np.sin(yy * 0.9) + 20 * np.sin(xx * 0.23 + yy * 0.31)
+        bg = np.clip(np.dstack([knit * 0.8, knit * 0.9, knit]), 0, 255).astype(np.uint8)
+        f, bb = draw(bg, 'BRING A WARM HAT', shadow=None)
+        r = captions.find(f, 0); d = cv2.distanceTransform((r['mask'] == 0).astype(np.uint8), cv2.DIST_L2, 5)
+        def sd(im):
+            L = cv2.cvtColor(im, cv2.COLOR_BGR2GRAY).astype(np.float32); mu = cv2.blur(L, (7, 7))
+            return np.sqrt(np.maximum(cv2.blur(L * L, (7, 7)) - mu * mu, 0))
+        R = captions.FEATHER[0]
+        soft = captions.erase_mask(f, r['mask'], None, 7.0, 0, feather=captions.FEATHER)
+        hard = captions.erase_mask(f, r['mask'], None, 7.0, 0)
+        edge, far = (d >= 9) & (d <= 12), (d > 7 + R + 6) & (d < 7 + R + 30)
+        self.assertGreater(float(sd(hard)[edge].mean()), 0.8 * float(sd(hard)[far].mean()))   # a sharp edge: full texture at once
+        self.assertLess(float(sd(soft)[edge].mean()), 0.6 * float(sd(soft)[far].mean()))     # feathered: the texture fades in
+        out_of_reach = d > 7 + R + 1
+        self.assertTrue(np.array_equal(soft[out_of_reach], hard[out_of_reach]))               # nothing past R px is touched
+
     def test_a_frame_without_a_caption_is_returned_as_it_is(self):
         g = ground('texture'); out, n = captions.erase(g, 47)
         self.assertEqual(n, 0); self.assertIs(out, g)
