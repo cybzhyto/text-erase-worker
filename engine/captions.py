@@ -198,8 +198,12 @@ def erase_mask(bgr, mask, shadow=None, core=7.0, grow=0, spur=True):
         far = np.unique(lb[sp & (d > core + grow + 9)])
         sp = np.isin(lb, np.setdiff1d(touch, far))
         if sp.any(): E |= cv2.dilate(sp.astype(np.uint8), K3) > 0
+    # the fill takes the ground, not the dark things next to the letters that stay (an app page's own words): with them
+    # a hole on a white page filled grey. A pixel much darker than the ground around the letters counts 1/20
+    Wt = 1 - E.astype(np.float32)
+    if spur: Wt[(~E) & (d <= core + grow + 30) & (Lg < 0.62 * bgl - 6)] *= 0.05
     E = E.astype(np.float32)
-    F = pushpull(I, 1 - E)
+    F = pushpull(I, Wt)
     Mf = np.clip(cv2.GaussianBlur(E, (0, 0), 1.5) * 1.6, 0, 1)[..., None]
     out = I * (1 - Mf) + F * Mf
     if shadow:                                   # untouched pixels stay bit-exact: only where the shadow reached
