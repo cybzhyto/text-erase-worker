@@ -140,8 +140,10 @@ def erase(bgr, cap_h, colors=(), shadow=None, core=7.0, grow=0):
     return erase_mask(bgr, r['mask'], shadow, core, grow), len(r['lines'])
 
 
-def erase_mask(bgr, mask, shadow=None, core=7.0, grow=0):
-    """Erase the letters of `mask` (uint8, the letters' fill) from a BGR crop: shadow divided out, letters filled."""
+def erase_mask(bgr, mask, shadow=None, core=7.0, grow=0, spur=True):
+    """Erase the letters of `mask` (uint8, the letters' fill) from a BGR crop: shadow divided out, letters filled.
+    spur=False: no pass for dark pixels past the fill (a fill that already reaches 12 px holds outline and shadow, and
+    that pass then takes dark lines of the picture next to the letters: a frame bar, a pill's edge)."""
     if not mask.any(): return bgr
     d = cv2.distanceTransform((mask == 0).astype(np.uint8), cv2.DIST_L2, 5)
     I = bgr.astype(np.float32)
@@ -154,8 +156,8 @@ def erase_mask(bgr, mask, shadow=None, core=7.0, grow=0):
     # are still much darker than the background around the letters
     E0 = E.astype(np.float32); Lg = I @ np.float32([0.114, 0.587, 0.299])
     den = cv2.GaussianBlur(1 - E0, (0, 0), 6); bgl = cv2.GaussianBlur(Lg * (1 - E0), (0, 0), 6) / np.maximum(den, 1e-3)
-    spur = (~E) & (d <= core + grow + 9) & (Lg < 0.62 * bgl - 6) & (den > 0.05)
-    if spur.any(): E |= cv2.dilate(spur.astype(np.uint8), K3) > 0
+    sp = (~E) & (d <= core + grow + 9) & (Lg < 0.62 * bgl - 6) & (den > 0.05) if spur else None
+    if sp is not None and sp.any(): E |= cv2.dilate(sp.astype(np.uint8), K3) > 0
     E = E.astype(np.float32)
     F = pushpull(I, 1 - E)
     Mf = np.clip(cv2.GaussianBlur(E, (0, 0), 1.5) * 1.6, 0, 1)[..., None]

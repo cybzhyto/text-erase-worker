@@ -375,6 +375,37 @@ def bright_parts(frames, t0, t1, rect, line_px):
     return out
 
 
+def still_mask_ok(frames, t0, t1, rect, e, holes=()):
+    """Would one letter mask for all of [t0, t1) take every letter of the block? The mask as plate.py builds it (pixels
+    selected on at least half of the frames where the letters stand out), on the sampled frames: (False, why) when it
+    is nearly empty, or when on some frame the pixels that stand out beyond the fill's reach (core0 + grow + 2 px) are
+    more than 15 % of the mask (a line that comes in late, a word that changes, letters that move: on the real proof
+    videos at most 8 %, on such drawn ones 31-50 %). (True, '') otherwise."""
+    x0, y0, x1, y1 = rect; k = e['k']
+    sel = []
+    for t, L in frames:
+        if not t0 <= t < t1: continue
+        H_, W_ = L.shape
+        X0, Y0, X1, Y1 = max(0, x0 - k), max(0, y0 - k), min(W_, x1 + k), min(H_, y1 + k)
+        c = L[Y0:Y1, X0:X1]; hat = cv2.morphologyEx(c, cv2.MORPH_TOPHAT, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k)))
+        s_ = (hat > e['thr']) & (c > e['lmin'])
+        if e.get('lmin2'): s_ |= (hat > e.get('thr2', 12)) & (c > e['lmin2'])
+        s_ = s_[y0 - Y0:y1 - Y0, x0 - X0:x1 - X0].copy()
+        for hx0, hy0, hx1, hy1 in holes: s_[max(0, hy0 - y0):max(0, hy1 - y0), max(0, hx0 - x0):max(0, hx1 - x0)] = False
+        sel.append(s_)
+    if len(sel) < 3: return False, 'too few frames'
+    n = np.array([int(q.sum()) for q in sel]); top = np.percentile(n, 90)
+    good = [q for q, c in zip(sel, n) if c >= 0.5 * top]
+    if top < 200 or not good: return False, 'no letters stand out'
+    M = np.mean(good, axis=0) >= 0.5
+    if M.sum() < 200: return False, 'mask nearly empty'
+    rr = int(e['core0'] + e['grow']) + 2
+    reach = cv2.dilate(M.astype(np.uint8), cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * rr + 1, 2 * rr + 1))) > 0
+    worst = max(int((q & ~reach).sum()) for q in sel)
+    if worst > 0.15 * M.sum(): return False, f'letters come or go ({worst} px beyond the mask of {int(M.sum())})'
+    return True, ''
+
+
 def follow(src, W, H, t_lo, t_hi, rect, tpl, reach=(24, 140), fps=15, lim=0.6):
     """The path of a text line that slides into place. tpl = its settled picture (the pixels of rect in a frame that
     shows it whole); it is searched in every frame of [t_lo, t_hi) within reach px (x, y) of rect. Returns
@@ -522,7 +553,8 @@ def main():
         return 'light' if sum(1 for d in v if d > 0) >= sum(1 for d in v if d < 0) else 'dark'
     fulls = []                                                   # full zones so far: (t0, t1, px rect)
     def add(t0, t1, r, role, line_px, full=False, pol=None):
-        if t1 - t0 < 0.02 or r is None: return
+        if t1 - t0 < 0.02: return
+        if r is None: cfg['auto']['zones'].append({'role': role, 't': [round(t0, 2), round(t1, 2)], 'skip': 'under a kept read'}); return
         rs, kept = pieces(t0, t1, r)                 # the block's rect without the build's kept source layers
         if not rs: cfg['auto']['zones'].append({'role': role, 't': [round(t0, 2), round(t1, 2)], 'skip': 'under a kept layer'}); return
         if full:
@@ -693,7 +725,62 @@ def main():
         cfg['auto']['zones'].append({'role': 'disclaimer', 'still': [[round(t, 2), round(t + d, 2)] for t, d in times], 'rect': r})
         for o in os_: still_ok[id(o)] = True
 
-    # 2) every other translated block: one zone per shot over its read boxes
+    def still_block(o, role, o0, o1):
+        """A light-lettered block that stays in one place for all of its time gets ONE letter mask for that time (a
+        "still" text, as the legal line has), not a zone per shot. A zone's mask is the letters that stand out on its
+        own shot, grown a few px: over a white wall half of a headline's letters do not stand out, and the letters' dark
+        shadow past the grown mask stayed as a row of dark specks on every ground. With one mask, found on the frames
+        where the letters do stand out, every letter is filled on every frame, and plate.py takes what is left of the
+        shadow next to it. Not for a block on the end card (it slides in), under a second long, without reads, with
+        reads that disagree on any side (it moves), on a plate (a pill: the fill would bite its edges), with dark
+        letters on any shot, that motion_union() sees move more than 6 px, whose kept elements differ from shot to shot
+        (a kept read on one shot would cut the mask for all of them), or whose letters come or go inside its time (a
+        line that comes in late, a word that changes: the one mask would miss them; still_mask_ok()).
+        Returns True when the entry was written (the caller then writes no zones for the block); False: zones per shot."""
+        def no(why):
+            cfg['auto'].setdefault('still_refused', []).append({'role': role, 't': [round(o0, 2), round(o1, 2)], 'why': why}); return False
+        if o1 - o0 < 1.0 or scene_type(o0) == 'packshot' or scene_type(o1 - 0.05) == 'packshot': return False
+        g = reads(role, o0, o1, o.get('text'))
+        if not g: return False
+        if any(x.get('plate') for x in g): return no('on a plate')
+        bs = [px(x['box'], 12, 10) for x in g]; r = union(bs)
+        if any(abs(b[k] - r[k]) > 0.03 * (H if k % 2 else W) for b in bs for k in range(4)): return no('reads disagree')
+        u = motion_union(frames, o0, o1, r, g[0].get('t'))
+        if any(abs(a_ - b_) > 6 for a_, b_ in zip(u, r)): return no('moves')
+        base = [max(0, u[0]), max(0, u[1]), min(W, u[2]), min(H, u[3])]
+        r = clip_keep(o0, o1, base)
+        if r is None: return False
+        kept = pieces(o0, o1, r)[1]
+        sh = [(a_, b_) for a_, b_ in shots(o0, o1, cuts)]
+        for a_, b_ in sh:                                  # what is kept must be the same on every shot
+            if clip_keep(a_, b_, base) != r or sorted(pieces(a_, b_, r)[1]) != sorted(kept): return no('kept differs between shots')
+        line = max((px(x['box'])[3] - px(x['box'])[1]) / max(1, int(x.get('lines') or 1)) for x in g)
+        # one measure per shot (a gate set by the bright shots misses dim letters on a dark one): the lowest threshold
+        # and gate of the shots
+        per = []
+        for a_, b_ in sh if len(sh) > 1 else [(o0, o1)]:
+            if b_ - a_ < 0.25: continue
+            m = measure(frames, a_, b_, r, kernel_for(line), polarity(g), kept)
+            ms = m if isinstance(m, list) else [m]
+            if not m or ms[0]['mode'] != 'light': return no('not light on a shot')
+            per.append(ms)
+        if not per: return False
+        ms = per[0]
+        e = {'role': role, 'block': True, 'k': ms[0]['k'], 'thr': min(q[0]['thr'] for q in per), 'lmin': min(q[0]['lmin'] for q in per),
+             'grow': ms[0]['grow'], 'core0': 7.0, 'min_left': 0.4}
+        two = [q[1] for q in per if len(q) > 1 and q[1]['mode'] == 'light']
+        if two: e.update(thr2=min(q['thr'] for q in two), lmin2=min(q['lmin'] for q in two))   # near-white fill on bright ground
+        ok, why = still_mask_ok(frames, o0, o1, r, e, kept)
+        if not ok: return no(why)
+        pc = lambda q: [round(v * 100 / s_, 2) for v, s_ in zip(q, (W, H, W, H))]
+        e.update(rect_pct=pc(r), times=[[round(o0, 3), round(o1 - o0, 3)]])
+        if kept: e['holes_pct'] = [pc(k) for k in kept]
+        cfg.setdefault('still', []).append(e)
+        cfg['auto']['zones'].append({'role': role, 'still': [[round(o0, 2), round(o1, 2)]], 'rect': r})
+        return True
+
+    # 2) every other translated block: one mask for all of its time when it stays in place (still_block), else one
+    # zone per shot over its read boxes
     for o in sorted(a.get('overlays', []), key=lambda o: o.get('role') != 'price'):   # full zones first: holes
         role = o.get('role')
         if role in CAPTION or role in KEEP and role != 'price': continue
@@ -704,6 +791,7 @@ def main():
         pc = max([c for c in cuts if c < o0 + 0.05] + [0.0]); nc = min([c for c in cuts if c > o1 - 0.05] + [D])
         if 0 < o0 - pc <= 0.2: o0 = pc
         if 0 < nc - o1 <= (0.5 if nc == D else 0.2): o1 = nc
+        if role not in ('price', 'disclaimer') and still_block(o, role, o0, o1): continue
         for t0, t1 in shots(o0, o1, cuts):
             if role == 'price':
                 if (o.get('text') or '').strip() not in lifted_txt: continue

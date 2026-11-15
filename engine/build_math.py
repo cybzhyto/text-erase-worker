@@ -396,7 +396,8 @@ for z in Z if SS else []:
     if z[6] not in ('full', 'exact', 'cap') and z[1] - z[0] >= 0.5 and len(z) <= 11:
         if len(z) == 10: z.append(150)
         z.append(SS)
-STILL = [dict({k: v for k, v in g.items() if k not in ('rect_pct', 'times')}, rect=px(*g['rect_pct']), times=[[t, t + d] for t, d in g['times']])
+STILL = [dict({k: v for k, v in g.items() if k not in ('rect_pct', 'times', 'holes_pct')}, rect=px(*g['rect_pct']),
+              times=[[t, t + d] for t, d in g['times']], holes=[px(*h) for h in g.get('holes_pct', [])])
          for g in cfg.get('still', [])]
 json.dump({'src': SRC, 'w': W_, 'h': H_, 'fps': rb.get('frame_rate', 30), 'duration': D, 'zones': Z, 'cap': cfg.get('cap'), 'still': STILL},
           open(f'{OUT}.zones.json', 'w'), indent=0)

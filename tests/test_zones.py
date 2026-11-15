@@ -112,5 +112,71 @@ class Follow(unittest.TestCase):
         self.assertIsNone(az.follow('none', W, H, 10.0, 11.4, self.rect, np.full_like(self.tpl, 24)))
 
 
+
+class StillBlock(unittest.TestCase):
+    """main() on drawn frames: a light headline that stays in place gets one mask for its time, a moving one gets zones."""
+    def run_main(self, ys, extra_reads=(), plate=None, late=False):
+        import json, tempfile
+        frames = []                                         # 4 fps, 4 s, two shots: a dark wall, then a mid-grey one
+        for i in range(16):
+            f, rect = line('Plain Sample Words', y=ys[i // 8], level=250, bg=40 if i < 8 else 110)
+            if late and i >= 11:                            # a second line comes in at 2.75 s, under the first
+                f2, _ = line('Below', y=ys[i // 8] + 80, level=250, bg=110); f[ys[i // 8] + 70:] = f2[ys[i // 8] + 70:]
+            frames.append((i / 4, f))
+        box = lambda r: {'xmin': r[0] * 1000 / W, 'ymin': r[1] * 1000 / H, 'xmax': r[2] * 1000 / W, 'ymax': r[3] * 1000 / H}
+        r0 = line('Plain Sample Words', y=ys[0])[1]; r1 = line('Plain Sample Words', y=ys[1])[1]
+        if late: r0, r1 = r0[:3] + [r0[3] + 90], r1[:3] + [r1[3] + 90]       # the reads show both lines
+        a = {'overlays': [{'role': 'headline', 'start': 0, 'end': 4, 'text': 'Plain Sample Words', 'box': box(r0)}],
+             'groups': [{'t': 1.0, 'role': 'headline', 'text': 'Plain Sample Words', 'box': box(r0), 'lines': 1, 'color': '#fafafa', 'surround': '#282828'},
+                        {'t': 3.0, 'role': 'headline', 'text': 'Plain Sample Words', 'box': box(r1), 'lines': 1, 'color': '#fafafa', 'surround': '#6e6e6e'}]
+                       + [dict(q, box=box(q['box'])) for q in extra_reads],
+             'cuts': [{'from': 2.0, 'to': 2.0}], 'scenes': [{'start': 0, 'end': 2, 'type': 'people'}, {'start': 2, 'end': 4, 'type': 'people'}]}
+        rb = {'width': W, 'height': H, 'duration': 4.0, 'frame_rate': 30, 'elements': []}
+        real, argv = az.load_gray, sys.argv
+        with tempfile.TemporaryDirectory() as d:
+            for name, obj in (('a', a), ('rb', rb)):
+                with open(f'{d}/{name}.json', 'w') as fh: json.dump(obj, fh)
+            az.load_gray = lambda src, fps, w, h, rows=None, span=None: frames
+            sys.argv = ['auto_zones.py', d + '/a.json', d + '/rb.json', 'none.mp4', d + '/cfg.json']
+            try: az.main()
+            finally: az.load_gray, sys.argv = real, argv
+            with open(d + '/cfg.json') as fh: cfg = json.load(fh)
+        return cfg
+
+    def test_a_headline_that_stays_in_place_is_one_still_text(self):
+        cfg = self.run_main((640, 640))
+        self.assertEqual([s['role'] for s in cfg.get('still', [])], ['headline'])
+        s = cfg['still'][0]
+        self.assertEqual(s['times'], [[0, 4.0]]); self.assertEqual(s['min_left'], 0.4)
+        self.assertEqual([z for z in cfg['auto']['zones'] if 'z' in z], [])            # and no zone per shot for it
+
+    def test_a_kept_read_on_one_shot_keeps_the_zones_per_shot(self):
+        # a sticker over the end of the line on the second shot only: one mask would lose those letters on both shots
+        r = line('Plain Sample Words', y=640)[1]
+        cfg = self.run_main((640, 640), extra_reads=[{'t': 3.0, 'role': 'sticker', 'text': 'x', 'lines': 1, 'box': [r[2] - 120, r[1] - 10, r[2] + 30, r[3] + 10]}])
+        self.assertEqual(cfg.get('still', []), [])
+        self.assertIn('kept differs between shots', [q['why'] for q in cfg['auto'].get('still_refused', [])])
+
+    def test_a_line_that_comes_in_late_keeps_the_zones_per_shot(self):
+        cfg = self.run_main((640, 640), late=True)
+        self.assertEqual(cfg.get('still', []), [])
+
+    def test_the_mask_check_on_its_own(self):
+        f, r = line('Plain Sample Words', y=640, level=250, bg=40); r = r[:3] + [r[3] + 90]
+        e = {'k': 31, 'thr': 40, 'lmin': 150, 'grow': 5, 'core0': 7.0}
+        steady = [(i / 4, f) for i in range(12)]
+        self.assertEqual(az.still_mask_ok(steady, 0, 3, r, e), (True, ''))
+        g = f.copy(); g[710:] = line('Below', y=720, level=250, bg=40)[0][710:]        # a line under it for the last third
+        ok, why = az.still_mask_ok(steady[:8] + [(i / 4, g) for i in range(8, 12)], 0, 3, r, e)
+        self.assertFalse(ok, why)
+        h = f.copy(); h[:, 540:] = 40                                                   # half of the words for the last third:
+        self.assertTrue(az.still_mask_ok(steady[:8] + [(i / 4, h) for i in range(8, 12)], 0, 3, r, e)[0])   # the mask holds them
+        self.assertEqual(az.still_mask_ok([(i / 4, np.full_like(f, 40)) for i in range(12)], 0, 3, r, e)[0], False)
+
+    def test_a_headline_that_sits_elsewhere_on_the_second_shot_gets_zones(self):
+        cfg = self.run_main((640, 900))
+        self.assertEqual(cfg.get('still', []), [])
+        self.assertEqual(len([z for z in cfg['auto']['zones'] if 'z' in z and z['role'] == 'headline']), 2)
+
 if __name__ == '__main__':
     unittest.main()

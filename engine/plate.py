@@ -10,7 +10,9 @@ zones: [t0, t1, x0, y0, x1, y1 (px), mode light|dark|both|full|exact, k (morph k
         mode cap = outlined caption letters (captions.py): k = their capital height in px; the zone rect is the band
         the captions live in, the letters are found in every frame wherever they are. ZONES.json "cap" = {colors,
         core, shadow, grow}: with a shadow model the soft shadow is divided out and only the letters are filled.
-        ZONES.json "still" = [{rect [x0, y0, x1, y1] px, times [[t0, t1]], k, thr, lmin}]: a text that stays the same
+        ZONES.json "still" = [{rect [x0, y0, x1, y1] px, times [[t0, t1]], k, thr, lmin, + thr2, lmin2 (a second
+        detector: near-white fill on bright ground), holes [px rects kept inside it], core0 (outline reach, 2.5 unless
+        given), min_left (share of the mask that must still stand out to count as left, 0.15 unless given)}]: a text that stays the same
         through many shots (the legal line). Its letters are found once, on the shots where they stand out, and that
         one mask erases it in every frame of its times; its soft shadow is measured on the flattest frames and divided
         out. On a white page such a text is only its grey shadow: no per-frame mask finds the letters there.
@@ -54,12 +56,16 @@ def still_on(g, t): return any(round(a * FPS) <= round(t * FPS) < round(b * FPS)
 def still_prepare():
     """Letter mask + shadow model of every "still" text, cached next to ZONES."""
     import os
+    import hashlib
     cf = Zf + '.still.npz'
     if not STILL: return
+    key = hashlib.sha1(json.dumps([{k: v for k, v in g.items() if k not in ('mask', 'shadow', 'core', 'fit')} for g in STILL],
+                                  sort_keys=True).encode()).hexdigest()
     if os.path.exists(cf) and os.path.getmtime(cf) >= os.path.getmtime(Zf):
         d = np.load(cf)
-        for i, g in enumerate(STILL): g['mask'] = d[f'm{i}']; g['shadow'] = (d[f's{i}'].tolist() or None); g['core'] = float(d[f'c{i}'])
-        return
+        if 'key' in d.files and str(d['key']) == key:               # the same entries (an edited entry rebuilds)
+            for i, g in enumerate(STILL): g['mask'] = d[f'm{i}']; g['shadow'] = (d[f's{i}'].tolist() or None); g['core'] = float(d[f'c{i}'])
+            return
     t_lo, t_hi = min(a for g in STILL for a, _ in g['times']), max(b for g in STILL for _, b in g['times'])
     p = subprocess.Popen(['ffmpeg', '-v', 'error', '-ss', f'{t_lo:.6f}', '-t', f'{t_hi - t_lo + 0.1:.6f}', '-i', SRC, '-vf', 'fps=10',
                           '-f', 'rawvideo', '-pix_fmt', 'bgr24', '-'], stdout=subprocess.PIPE)
@@ -74,16 +80,21 @@ def still_prepare():
             x0, y0, x1, y1 = g['rect']; k = g.get('k', 15); pad = k
             X0, Y0, X1, Y1 = max(0, x0 - pad), max(0, y0 - pad), min(W, x1 + pad), min(H, y1 + pad)
             L = cv2.cvtColor(I[Y0:Y1, X0:X1], cv2.COLOR_BGR2GRAY)
-            sel = ((cv2.morphologyEx(L, cv2.MORPH_TOPHAT, ker(k)) > g.get('thr', 40)) & (L > g.get('lmin', 150)))[y0 - Y0:y1 - Y0, x0 - X0:x1 - X0]
+            hat = cv2.morphologyEx(L, cv2.MORPH_TOPHAT, ker(k))
+            sel = (hat > g.get('thr', 40)) & (L > g.get('lmin', 150))
+            if g.get('lmin2'): sel |= (hat > g.get('thr2', 12)) & (L > g['lmin2'])       # near-white fill on bright ground
+            sel = sel[y0 - Y0:y1 - Y0, x0 - X0:x1 - X0]
             acc[i].append((sel, I[max(0, y0 - 60):min(H, y1 + 60), x0:x1].copy()))
     out = {}
     for i, g in enumerate(STILL):
-        g['mask'] = np.zeros((g['rect'][3] - g['rect'][1], g['rect'][2] - g['rect'][0]), np.uint8); g['shadow'] = None; g['core'] = 2.5
+        g['mask'] = np.zeros((g['rect'][3] - g['rect'][1], g['rect'][2] - g['rect'][0]), np.uint8); g['shadow'] = None; g['core'] = float(g.get('core0', 2.5))
         if acc[i]:
             n = np.array([int(sel.sum()) for sel, _ in acc[i]]); top = np.percentile(n, 90)
             good = [sel for (sel, _), c in zip(acc[i], n) if c >= 0.5 * top]       # frames where the letters stand out
             if good and top >= 200:
                 g['mask'] = ((np.mean(good, axis=0) >= 0.5) * 255).astype(np.uint8)
+                for hx0, hy0, hx1, hy1 in g.get('holes', []):                 # what the build keeps inside the rect
+                    g['mask'][max(0, hy0 - g['rect'][1]):max(0, hy1 - g['rect'][1]), max(0, hx0 - g['rect'][0]):max(0, hx1 - g['rect'][0])] = 0
                 # the shadow: fitted on the frames with the flattest surround, with this mask as the letters
                 y0 = g['rect'][1]; off = y0 - max(0, y0 - 60)
                 crops = [c for _, c in acc[i]][:: max(1, len(acc[i]) // 60)]
@@ -92,17 +103,41 @@ def still_prepare():
                 g['shadow'] = fit['shadow']; g['fit'] = {k: fit.get(k) for k in ('err', 'base', 'n', 'reach')}
         out[f'm{i}'] = g['mask']; out[f's{i}'] = np.array(g['shadow'] or [], np.float64); out[f'c{i}'] = np.array(g['core'])
         print('still', i, 'letters', int((g['mask'] > 0).sum()), 'px, shadow', g['shadow'], g.get('fit'), flush=True)
-    np.savez_compressed(cf, **out)
+    np.savez_compressed(cf, key=np.array(key), **out)
+def still_sel(L, g, X0, Y0):
+    """A still entry's letter pixels in a gray crop whose top-left corner is (X0, Y0), cut to the entry's rect."""
+    x0, y0, x1, y1 = g['rect']; k = g.get('k', 15)
+    hat = cv2.morphologyEx(L, cv2.MORPH_TOPHAT, ker(k))
+    sel = (hat > g.get('thr', 40)) & (L > g.get('lmin', 150))
+    if g.get('lmin2'): sel |= (hat > g.get('thr2', 12)) & (L > g['lmin2'])
+    return sel[y0 - Y0:y1 - Y0, x0 - X0:x1 - X0]
+def still_near(g, t):
+    """t is one of the R frames just before or just after the entry's times: a text's listed times come from stills and
+    can stop a frame or two short (a zone's mask covers those frames through its +-R union)."""
+    f = round(t * FPS)
+    return any(round(a * FPS) - R <= f < round(a * FPS) or round(b * FPS) <= f < round(b * FPS) + R for a, b in g['times'])
 def still_erase(I, t):
-    """The frame with its "still" texts erased (their one mask, the shadow divided out)."""
+    """The frame with its "still" texts erased (their one mask, the shadow divided out). A block entry (a headline that
+    stays in place: g['block']) is also erased on the R frames next to its times when at least half of its mask stands
+    out there; its crop has 60 px of context on the sides too (a fill cut at the rect's side left a step), the dark-pixel
+    pass is off (its 12 px fill holds outline and shadow), and what the build keeps inside its rect (holes) is put back
+    as it was."""
     O = I
     for g in STILL:
-        if not still_on(g, t) or not g['mask'].any(): continue
+        if not g['mask'].any(): continue
+        blk = g.get('block')
         x0, y0, x1, y1 = g['rect']; Y0, Y1 = max(0, y0 - 60), min(H, y1 + 60)
-        big = np.zeros((Y1 - Y0, x1 - x0), np.uint8); big[y0 - Y0:y0 - Y0 + g['mask'].shape[0]] = g['mask']
-        c = captions.erase_mask(O[Y0:Y1, x0:x1], big, g['shadow'], g['core'], 0 if g['shadow'] else g.get('grow', 4))
+        X0, X1 = (max(0, x0 - 60), min(W, x1 + 60)) if blk else (x0, x1)
+        if not still_on(g, t):
+            if not (blk and still_near(g, t)): continue
+            m = g['mask'] > 0
+            if (still_sel(cv2.cvtColor(I[Y0:Y1, X0:X1], cv2.COLOR_BGR2GRAY), g, X0, Y0) & m).sum() < 0.5 * m.sum(): continue
+        big = np.zeros((Y1 - Y0, X1 - X0), np.uint8); big[y0 - Y0:y0 - Y0 + g['mask'].shape[0], x0 - X0:x0 - X0 + g['mask'].shape[1]] = g['mask']
+        c = captions.erase_mask(O[Y0:Y1, X0:X1], big, g['shadow'], g['core'], 0 if g['shadow'] else g.get('grow', 4), spur=not blk)
         if O is I: O = I.copy()
-        O[Y0:Y1, x0:x1] = c
+        O[Y0:Y1, X0:X1] = c
+        for hx0, hy0, hx1, hy1 in g.get('holes', []):
+            O[max(0, hy0):max(0, hy1), max(0, hx0):max(0, hx1)] = I[max(0, hy0):max(0, hy1), max(0, hx0):max(0, hx1)]
     return O
 def raw_sel(L, z, thr_scale=1.0):
     """The zone's letter pixels in one frame (before grow), 255 / 0, cropped to the zone rect; None for an empty rect."""
@@ -242,13 +277,28 @@ if '--check' in sys.argv:
     # a "still" text (the legal line): on the frames where its letters stood out of the source (at least half of the
     # mask), how many of the mask's pixels still stand out of the plate. Listed as zone 1000 + its index, mode still
     for gi, g in enumerate(STILL):
-        if not g['mask'].any(): continue
         x0, y0, x1, y1 = g['rect']; k = g.get('k', 15); Y0, Y1 = max(0, y0 - k), min(H, y1 + k); X0, X1 = max(0, x0 - k), min(W, x1 + k)
         t_lo, t_hi = min(a for a, _ in g['times']), max(b for _, b in g['times'])
+        if not g['mask'].any():
+            # a block whose letters never stood out enough to give a mask is not erased at all: listed on every
+            # sampled frame of its time, so the job stops (the legal line keeps its old behaviour: skipped)
+            if g.get('block'):
+                n_ = max(3, int(round((t_hi - t_lo) * 10)))
+                hits[1000 + gi] = [(round(t_lo, 2), 0)] * n_
+                print('zone %d still %.2f-%.2f rect %s: %d frames, worst (%.2f, 0)' % (1000 + gi, t_lo, t_hi, g['rect'], n_, t_lo))
+            continue
         def rows(path):
             return subprocess.Popen(['ffmpeg', '-v', 'error', '-ss', f'{t_lo:.6f}', '-t', f'{t_hi - t_lo:.6f}', '-i', path, '-vf',
                                      f'fps=10,format=gray,crop={X1 - X0}:{Y1 - Y0}:{X0}:{Y0}', '-f', 'rawvideo', '-pix_fmt', 'gray', '-'], stdout=subprocess.PIPE)
         ps, pp = rows(SRC), rows(OUT); n = (X1 - X0) * (Y1 - Y0); m = g['mask'] > 0; need = 0.5 * m.sum(); bad = []; j = 0
+        # a block entry: letters the mask missed (a line that came in late, a word that changed) stand out of the source
+        # beyond the fill's reach and still stand out of the plate; more than a quarter of the mask of them = left
+        reach = None
+        if g.get('block'):
+            rr = int(g['core'] + g.get('grow', 4)) + 2
+            reach = cv2.dilate(m.astype(np.uint8), cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * rr + 1, 2 * rr + 1))) > 0
+            for hx0, hy0, hx1, hy1 in g.get('holes', []):
+                reach[max(0, hy0 - y0):max(0, hy1 - y0), max(0, hx0 - x0):max(0, hx1 - x0)] = True
         def sel(b):
             L = np.frombuffer(b, np.uint8).reshape(Y1 - Y0, X1 - X0)
             return ((cv2.morphologyEx(L, cv2.MORPH_TOPHAT, ker(k)) > g.get('thr', 40)) & (L > g.get('lmin', 150)))[y0 - Y0:y1 - Y0, x0 - X0:x1 - X0]
@@ -256,9 +306,14 @@ if '--check' in sys.argv:
             a, b = ps.stdout.read(n), pp.stdout.read(n)
             if len(a) < n or len(b) < n: break
             t = t_lo + j / 10; j += 1
-            if still_on(g, t) and (sel(a) & m).sum() >= need:
+            if not still_on(g, t): continue
+            sa = sel(a)
+            if (sa & m).sum() >= need:
                 left = int((sel(b) & m).sum())
-                if left >= 0.15 * m.sum(): bad.append((round(t, 2), left))
+                if left >= g.get('min_left', 0.15) * m.sum(): bad.append((round(t, 2), left)); continue
+            if reach is not None:
+                out_ = int((sa & ~reach & sel(b)).sum())
+                if out_ >= max(MIN, 0.25 * m.sum()): bad.append((round(t, 2), out_))
         ps.kill(); pp.kill()
         if bad:
             hits[1000 + gi] = bad
@@ -277,8 +332,10 @@ if '--check' in sys.argv:
                 if on(z, k / FPS):
                     g = z[9] + 24; ok[max(0, z[3] - g):z[5] + g, max(0, z[2] - g):z[4] + g] = 1
             for q in STILL:                               # a "still" text is erased inside its rect (+ its shadow's reach)
-                if still_on(q, k / FPS):
+                if still_on(q, k / FPS) or (q.get('block') and still_near(q, k / FPS)):
                     x0, y0, x1, y1 = q['rect']; ok[max(0, y0 - 36):y1 + 36, max(0, x0 - 36):x1 + 36] = 1
+        for q in STILL:                                   # ... but never inside what the build keeps there
+            for hx0, hy0, hx1, hy1 in q.get('holes', []): ok[max(0, hy0):max(0, hy1), max(0, hx0):max(0, hx1)] = 0
         n = int((d & (ok == 0)).sum())
         if n > 300: off.append((round(j / FPS, 2), n))
     for b in iter(lambda: p.stdout.read(W * H * 3), b''):

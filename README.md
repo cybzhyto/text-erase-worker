@@ -27,6 +27,20 @@ GitHub Actions run (`.github/workflows/erase.yml`), started by the caller's auto
 - **A text that stays through many shots** (the legal line, `still` in ZONES.json): its letters are found once, on the
   shots where they stand out, and that one mask erases the line in every frame of its time. On a white page such a
   line is only its grey shadow, and a zone measured on that shot alone found dark specks or nothing.
+  A **light-lettered block that stays in one place** (a headline, a call to action outside the end card, a second or
+  longer, its reads agreeing, no move over 6 px) is erased the same way: a zone per shot took only the letters that
+  stood out on that shot, grown a few px, so over a white wall half of the letters stayed and on every ground the
+  letters' dark shadow stayed as a row of specks or as a readable grey word. Its mask also takes near-white fill
+  on bright ground (a second, low threshold, and the lowest gate of its shots), and what the build keeps inside its
+  rect is put back as it was after the fill. The fill reaches 12 px (outline and shadow), so the pass for dark pixels
+  past it is off (it took picture lines: a frame bar, a pill's edge); the crop has 60 px of context on every side; the
+  R frames next to the block's times are erased too when half of its mask stands out there.
+  The block keeps zones per shot instead when: a read names a plate behind it, its reads disagree on any side, a kept
+  element shows on some of its shots only, its letters are dark on a shot, or its letters come or go inside its time
+  (on some frame the letters beyond the mask's reach are over 15 % of the mask: a line that comes in late, a word
+  that changes; `still_mask_ok()`). `cfg.auto.still_refused` says why. The check counts a block as left when 40 % of
+  its mask still stands out, when letters beyond the mask's reach (over a quarter of it) stand out of both the source
+  and the plate, or when its mask came out empty (every frame of its time).
 - **A translucent caption plate** (zone mode `exact`): the whole plate with its letters, on its page's own frames
   only (a `full` zone is also erased on the 2 frames before and after it).
 
@@ -132,7 +146,7 @@ stills, shot changes, what the build covers) gets its cfg measured on the source
   across the block (at least half of its width) cuts the zone back on the side that costs it least. One that only
   meets a side or a corner (a price tag at the end of a headline's last line), and every source layer the build
   itself keeps («orig …»), is cut out of the zone exactly (+ 6 px around a read): the rest of the line is erased.
-- **Light letters on bright ground** (a headline's last line over white trousers) do not stand out; only their dark
+- **Light letters on bright ground**, in a block that is erased by zones (it moves, or is on the end card): they do not stand out; only their dark
   shadow does, and it stayed as a grey word. The part of a light block that stands on bright ground (the strip right
   beside it is bright, and the part's own 75th-percentile luma is at least 215) gets a second zone, inside the
   block's rect, that takes dark thin shapes. The word is gone; a faint trace of the shadow's edge can stay.
