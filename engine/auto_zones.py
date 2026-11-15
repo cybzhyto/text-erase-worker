@@ -520,6 +520,14 @@ def main():
         # box are ringed by dark too, but there the box is the thing to erase
         nbox = sum(1 for c in cap if c['box'])
         outlined = not PL and nbox < 0.2 * max(1, len(cap)) and outlined_captions(SRC, W, H, D, cy0, cy1, win, rb, cfg)
+        # a coloured box behind the spoken word (it jumps from word to word) is not erased by any measure here: such a
+        # source is named and every caption block counts as uncovered, so the job stops instead of leaving the boxes
+        lh_c = sorted((px(g['box'])[3] - px(g['box'])[1]) / max(1, int(g.get('lines') or 1)) for g in groups if g.get('role') in CAPTION)
+        lh_c = lh_c[len(lh_c) // 2] if lh_c else sorted(b[3] - b[1] for b in sb)[len(sb) // 2]
+        hb = [np.ascontiguousarray(f[..., ::-1]).astype(np.uint8) for t, f in load_rgb(SRC, 5, W, H, (max(0, cy0 - 60), min(H, cy1 + 60)))
+              if any(s - 0.05 <= t < e + 0.05 for s, e in win)]
+        hshare, hspots = highlight_boxes(hb, lh_c)
+        boxed_word = hshare >= 0.15 and hspots >= 3
         if outlined: cap = [dict(c, text=None) for c in cap]      # their letters are the "cap" zones'; a black box stays a box
         cfg['caption_rects'] = caption_rects(cap, W, H)
         if PL: cfg['caption_rects'] = sorted(cfg['caption_rects'] + PL['rects'], key=lambda r: r[0])
@@ -539,6 +547,9 @@ def main():
             cfg['auto']['captions'] = {'style': 'plates' if PL else 'boxes / bare letters', 'blocks': len(win), 'share': share,
                                        'letters_seen': len(seen)}
         cfg['auto']['captions']['uncovered'] = sum(1 for v in cfg['auto']['captions']['share'] if v < 0.5)
+        if boxed_word:
+            cfg['auto']['captions'].update(style='word on a coloured box (not supported)', uncovered=len(win),
+                                           boxes={'share': round(hshare, 2), 'spots': hspots})
         # bare letters anywhere (captions without a box in some shots): only the measured boxes are old boxes the new box
         # covers; a bare-letter page is erased (old_boxes «all» would leave it under the new box's edges)
         bare = sum(1 for c in cap if c['text']) >= 3
@@ -562,21 +573,27 @@ def main():
     # time (found on the shots where the letters stand out), its soft shadow divided out. On a white page the line is
     # only its grey shadow, so a zone measured on that shot alone found dark specks or nothing.
     still_ok = {}
+    by_text = {}
     for o in a.get('overlays', []):
-        if o.get('role') != 'disclaimer': continue
-        o0, o1 = float(o['start']), float(o['end'])
-        sh = shots(o0, o1, cuts); g = reads('disclaimer', o0, o1)
-        if len(sh) < 3 or len(g) < 3: continue
+        if o.get('role') == 'disclaimer': by_text.setdefault(' '.join(str(o.get('text') or '').lower().split())[:24], []).append(o)
+    for os_ in by_text.values():                                             # the same line listed as several blocks = one text
+        spans = sorted((float(o['start']), float(o['end'])) for o in os_)
+        g = {round(float(x['t']), 2): x for a0, a1 in spans for x in reads('disclaimer', a0, a1)}.values()
+        if sum(len(shots(a0, a1, cuts)) for a0, a1 in spans) < 3 or len(g) < 3: continue
         bs = [px(x['box'], 12, 10) for x in g]; r = [sorted(v)[len(v) // 2] for v in zip(*bs)]
         near = [b for b in bs if all(abs(p - q) <= 0.03 * H for p, q in zip(b[1::2], r[1::2]))]
         if len(near) < 0.6 * len(bs): continue                               # the reads do not agree: per-shot zones
         # not clipped off the kept blocks (page buttons under the line): only the line's own letters are filled, the
         # shadow is divided out, so what sits under it stays
         r = [min(b[0] for b in near), min(b[1] for b in near), max(b[2] for b in near), max(b[3] for b in near)]
+        times = []
+        for a0, a1 in spans:
+            if times and a0 - (times[-1][0] + times[-1][1]) <= 0.05: times[-1][1] = round(a1 - times[-1][0], 3)
+            else: times.append([round(a0, 3), round(a1 - a0, 3)])
         cfg.setdefault('still', []).append({'role': 'disclaimer', 'rect_pct': [round(v * 100 / s_, 2) for v, s_ in zip(r, (W, H, W, H))],
-                                            'times': [[round(o0, 3), round(o1 - o0, 3)]], 'k': 15, 'thr': 40, 'lmin': 150, 'grow': 4})
-        cfg['auto']['zones'].append({'role': 'disclaimer', 'still': [round(o0, 2), round(o1, 2)], 'rect': r})
-        still_ok[id(o)] = True
+                                            'times': times, 'k': 15, 'thr': 40, 'lmin': 150, 'grow': 4})
+        cfg['auto']['zones'].append({'role': 'disclaimer', 'still': [[round(t, 2), round(t + d, 2)] for t, d in times], 'rect': r})
+        for o in os_: still_ok[id(o)] = True
 
     # 2) every other translated block: one zone per shot over its read boxes
     for o in sorted(a.get('overlays', []), key=lambda o: o.get('role') != 'price'):   # full zones first: holes
@@ -657,6 +674,36 @@ HOUSE = {'font_family': 'Poppins', 'font_weight': '800', 'stroke_color': '#00000
          'shadow_color': 'rgba(0,0,0,0.7)', 'shadow_blur': '2 vmin', 'shadow_y': '0.3 vmin'}
 
 
+def bright_letters(f):
+    """True when a BGR crop of the caption rows holds bright letters that stand out of their surround: near-white, low
+    chroma, a top-hat over 60, filling at least 12 % of their bbox, at most two lines tall and not cut by the frame (the
+    measure the bare-letter rects use)."""
+    L = cv2.cvtColor(f, cv2.COLOR_BGR2GRAY)
+    T = (L > 225) & (cv2.morphologyEx(L, cv2.MORPH_TOPHAT, TOPHAT_C) > 60) & ((f.max(2).astype(np.int16) - f.min(2)) < 45)
+    if T.sum() < 250: return False
+    cols = np.nonzero(T.sum(0) >= 3)[0]; rws = np.nonzero(T.sum(1) >= 3)[0]
+    if not len(cols) or not len(rws): return False
+    w, h = cols.max() - cols.min() + 1, rws.max() - rws.min() + 1
+    return T.sum() / (w * h) >= 0.12 and h <= 170 and cols.min() > 2 and cols.max() < f.shape[1] - 3
+
+
+def highlight_boxes(frames, lh):
+    """Share of the caption frames (BGR crops of the caption rows) that show a coloured box behind a word: a compact
+    block of strong, bright colour (channel spread >= 90 with the top channel >= 200; measured on one test video: an
+    orange-to-pink box 126-232 / 104-230, a wooden floor beside it stays under), 1.1-2.4 text lines tall and at least 1.2 wide, filling its bbox once its letters are closed over, with
+    white letter fill inside it. Such a box moves from word to word; this engine does not erase it."""
+    hit = 0; xs = set()
+    for f in frames:
+        C = (((f.max(2).astype(np.int16) - f.min(2)) >= 90) & (f.max(2) >= 200)).astype(np.uint8)
+        n, lab, st, _ = cv2.connectedComponentsWithStats(cv2.morphologyEx(C, cv2.MORPH_CLOSE, np.ones((21, 21), np.uint8)), connectivity=8)
+        for i in range(1, n):
+            x, y, w, h, a = (int(v) for v in st[i])
+            if not (1.1 * lh <= h <= 2.4 * lh and 1.2 * lh <= w <= 14 * lh and a >= 0.8 * w * h): continue
+            if (f[y:y + h, x:x + w].min(2) >= 225).mean() >= 0.08:              # white letters inside it
+                hit += 1; xs.add(x // 40); break
+    return (hit / len(frames) if frames else 0.0), len(xs)
+
+
 def caption_frames(SRC, W, H, cy0, cy1, win):
     """Times (at FPS_C) inside the caption blocks where a line of letters ringed by dark is found in the caption rows."""
     q0, q1 = max(0, cy0 - 80), min(H, cy1 + 80); out = []
@@ -693,8 +740,16 @@ def outlined_captions(SRC, W, H, D, cy0, cy1, win, rb, cfg):
         cfg['zones_extra'].append(z); cfg['auto']['zones'].append({'role': 'subtitle', 'z': z})
     grow = 0 if fit['shadow'] else max(0, fit['reach'] - int(fit['core']))
     cfg['cap'] = {'cap_h': int(ch), 'core': fit['core'], 'shadow': fit['shadow'], 'grow': grow, 'colors': []}
-    on = [(t, t + 1 / FPS_C) for t, r in found if r['lines']]
-    cfg['auto']['captions'] = {'style': 'outlined', 'blocks': len(win), 'share': [covered_share(a, b, on) for a, b in win],
+    # covered = of the frames that show caption letters at all (a line found, or bright letters that stand out of
+    # their surround in the caption rows: the measure for bare letters), the share with a line. Captions that come and
+    # go with the speech leave their block's time half empty: that is not a miss, so the block's time is not the measure
+    b0, b1 = max(0, cy0 - 10 - q0), max(0, cy1 + 10 - q0)
+    seen = [(t, bool(r['lines']), bool(r['lines']) or bright_letters(f[b0:b1])) for (t, f), (_, r) in zip(fr, found)]
+    share = []
+    for a, b in win:
+        fb = [(ln, any_) for t, ln, any_ in seen if a - 0.05 <= t < b + 0.05 and any_]
+        share.append(round(sum(1 for ln, _ in fb if ln) / len(fb), 2) if fb else 1.0)
+    cfg['auto']['captions'] = {'style': 'outlined', 'blocks': len(win), 'share': share, 'letters_seen': sum(1 for _, _, x in seen if x),
                                'cap_h': int(ch), 'fit': {k: fit[k] for k in ('core', 'shadow', 'reach', 'err', 'n')}}
     # the new caption layer takes the measured look: size from the capital height (0.70 em in heavy sans caps), the
     # house numbers when the measured shadow is the house one, else the measured outline and shadow
@@ -710,7 +765,11 @@ def outlined_captions(SRC, W, H, D, cy0, cy1, win, rb, cfg):
         if sh and 0.6 <= sh[1] <= 0.85 and 9 <= sh[2] <= 12.5 and 1.5 <= sh[3] <= 4.5 and fit['core'] <= 8:
             look.update(HOUSE)
         else:
-            look.update({'stroke_color': '#000000', 'stroke_width': f'{max(1.0, fit["core"] - 3) / vmin:.2f} vmin'})
+            # another outlined look (a thicker outline, no shadow …): the house caption font with the measured outline
+            # and shadow. A stroke shows about 0.8 of its width outside the fill (the house look: 0.35 vmin = 3.8 px
+            # drawn, 3 px measured), so the measured reach is widened by 1.2
+            look.update({'font_family': HOUSE['font_family'], 'font_weight': HOUSE['font_weight'],
+                         'stroke_color': '#000000', 'stroke_width': f'{1.2 * max(1.0, fit["core"] - 3) / vmin:.2f} vmin'})
             if sh: look.update({'shadow_color': f'rgba(0,0,0,{sh[1]:.2f})', 'shadow_blur': f'{2 * sh[2] / vmin:.2f} vmin', 'shadow_y': f'{sh[3] / vmin:.2f} vmin'})
             else: look.update({'shadow_color': None, 'shadow_blur': None, 'shadow_y': None})
         cfg.setdefault('text_set', {})['transcript'] = look

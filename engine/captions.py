@@ -201,11 +201,12 @@ def fit_shadow(crops, cap_h=0, colors=(), masks=None):
         md = float(np.median(far))                # flat = most of the surround at one level (a button or a line of
         cand.append((1.4826 * float(np.median(np.abs(far - md))), md, L, d, box))   # page text in it is an outlier)
     cand.sort(key=lambda q: q[0])
-    use = [q for q in cand[:6] if q[0] <= 8]
+    flat = [q for q in cand if q[0] <= 8]
+    use = flat[:6]
     out = {'core': 7.0, 'shadow': None, 'reach': 0, 'err': None, 'n': len(use)}
     if not use: return out
     # the outline: the last distance whose median is still much darker than the surround, on bright surrounds
-    br = [q for q in use if q[1] >= 150]
+    br = [q for q in flat if q[1] >= 150][:6]
     if br:
         ends = []
         for _, bg, L, d, box in br:
@@ -215,7 +216,11 @@ def fit_shadow(crops, cap_h=0, colors=(), masks=None):
                 if s.any() and np.median(L[s]) < 0.62 * bg: e = k
             ends.append(e)
         out['core'] = float(min(12, max(5, sorted(ends)[len(ends) // 2] + 3)))
-    # how dark the ring just past the outline is, relative to the surround
+    # how dark the ring just past the outline is, relative to the surround; only over ground bright enough to show a
+    # shadow (a flat dark shot says nothing about it)
+    use = [q for q in flat if q[1] >= 90][:6]
+    out['n'] = len(use)
+    if not use: return out
     dk = []; reach = []
     for _, bg, L, d, box in use:
         c0 = out['core']

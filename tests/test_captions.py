@@ -121,3 +121,38 @@ class Fill(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+# ---- engine/auto_zones.py: the measures round the caption detector ----
+import auto_zones
+
+
+def boxed_word(x, text='OVER'):
+    """A tan frame with a white line of text whose one word sits on an orange-to-pink box at x."""
+    img = Image.fromarray(ground('tan')); d = ImageDraw.Draw(img)
+    w = int(d.textlength(text, font=FONT)) + 40
+    grad = np.linspace(0, 1, w)[None, :, None] * (np.array([155, 104, 230]) - np.array([48, 136, 232])) + np.array([48, 136, 232])
+    a = np.asarray(img).copy(); a[70:170, x:x + w] = np.clip(grad, 0, 255).astype(np.uint8)
+    img = Image.fromarray(a); d = ImageDraw.Draw(img)
+    d.text((x + 20, 120), text, font=FONT, anchor='lm', fill=(255, 255, 255))
+    return np.asarray(img)
+
+
+class Measures(unittest.TestCase):
+    def test_a_coloured_box_behind_the_spoken_word_is_seen_and_plain_captions_are_not(self):
+        boxed = [boxed_word(x) for x in (80, 240, 400, 560, 720)]
+        share, spots = auto_zones.highlight_boxes(boxed, 65)
+        self.assertGreaterEqual(share, 0.8); self.assertGreaterEqual(spots, 3)
+        plain = [draw(ground(k), 'WHEN YOUR CLOTHES')[0] for k in ('tan', 'white', 'black', 'texture', 'split')]
+        self.assertEqual(auto_zones.highlight_boxes(plain, 65), (0.0, 0))
+
+    def test_bright_letters_are_seen_on_dark_ground_and_not_on_a_bare_frame(self):
+        self.assertTrue(auto_zones.bright_letters(draw(ground('black'), 'SOMEONE ELSE.', shadow=None)[0]))
+        self.assertTrue(auto_zones.bright_letters(draw(ground('tan'), 'SOMEONE ELSE.')[0]))
+        for kind in ('white', 'black', 'tan', 'texture'):
+            self.assertFalse(auto_zones.bright_letters(ground(kind)), kind)
+
+    def test_the_share_of_a_block_under_an_erase(self):
+        self.assertEqual(auto_zones.covered_share(0, 10, [(0, 4), (3, 6), (9, 12)]), 0.7)
+        self.assertEqual(auto_zones.covered_share(5, 5, []), 1.0)
+        self.assertEqual(auto_zones.covered_share(0, 10, []), 0.0)
