@@ -43,6 +43,40 @@ class CutOut(unittest.TestCase):
         self.assertFalse(az.across([450, 250, 600, 400], r))              # a tag at its corner
 
 
+class BrightParts(unittest.TestCase):
+    """Light letters on bright ground: the part of the block that gets a zone for the letters' dark shadow."""
+    def frames(self, inside, below):
+        L = np.full((H, W), 90, np.uint8); L[600:700, 200:880] = inside; L[700:760, 200:880] = below
+        return [(i / 4, L.copy()) for i in range(8)]
+
+    def test_a_dark_block_next_to_bright_cards_gets_none(self):
+        self.assertEqual(az.bright_parts(self.frames(90, 250), 0, 2, [200, 600, 880, 700], 50), [])
+        self.assertEqual(az.bright_parts(self.frames(200, 250), 0, 2, [200, 600, 880, 700], 50), [])     # mid-bright is not bright
+
+    def test_a_block_on_bright_ground_gets_its_last_lines(self):
+        out = az.bright_parts(self.frames(235, 250), 0, 2, [200, 600, 880, 700], 50)
+        self.assertEqual(len(out), 1)
+        x0, y0, x1, y1 = out[0]
+        self.assertTrue(x0 <= 230 and x1 >= 850 and y1 == 700 and 600 <= y0 <= 640, out)
+
+    def test_no_bright_strip_beside_the_block_no_part(self):
+        self.assertEqual(az.bright_parts(self.frames(235, 90), 0, 2, [200, 600, 880, 700], 50), [])
+
+
+class JobLog(unittest.TestCase):
+    def test_the_check_is_read_from_a_byte_offset_in_a_log_with_other_alphabets(self):
+        import tempfile
+        sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'worker'))
+        import run_job
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, 'log.txt')
+            with open(p, 'w', encoding='utf-8') as f:
+                f.write('page: ¿Qué más? · сторінка: приклад тексту\n' * 40); f.flush(); mark = os.path.getsize(p)
+                f.write('zone 3 cap 1.00-9.00 rect [0, 10, 20, 30]: 12 frames, worst (2.5, 640)\ncheck: blur off the text in 2 frames\n')
+            chk = run_job.parse_check(run_job.log_from(p, mark))
+        self.assertEqual(chk, {'residue': [[3, 'cap', 1.0, 9.0, 12, 2.5, 640]], 'offText': 2})
+
+
 class Follow(unittest.TestCase):
     """A line that comes up 90 px while it fades in, as an end-card tagline does."""
     def setUp(self):

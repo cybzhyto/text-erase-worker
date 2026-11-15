@@ -57,7 +57,7 @@ def still_prepare():
     cf = Zf + '.still.npz'
     if not STILL: return
     if os.path.exists(cf) and os.path.getmtime(cf) >= os.path.getmtime(Zf):
-        d = np.load(cf, allow_pickle=True)
+        d = np.load(cf)
         for i, g in enumerate(STILL): g['mask'] = d[f'm{i}']; g['shadow'] = (d[f's{i}'].tolist() or None); g['core'] = float(d[f'c{i}'])
         return
     t_lo, t_hi = min(a for g in STILL for a, _ in g['times']), max(b for g in STILL for _, b in g['times'])

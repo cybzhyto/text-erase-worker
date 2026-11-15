@@ -20,7 +20,8 @@ GitHub Actions run (`.github/workflows/erase.yml`), started by the caller's auto
   the background: its fill is an island of the fill colour whose rim is the dark outline all the way round. Islands
   as tall as a capital, two or more in a row, are a text line; punctuation joins glyph by glyph. A white coat, a
   pearl, a radio button, the counters of dark page text are islands too, but nothing dark rings them or they do not
-  line up. The letters' soft shadow is not blurred away: it is measured on the frames whose surround is flat and
+  line up. The spoken word in another colour is a caption letter too: its fill colour is measured (`cap.colors`).
+  The letters' soft shadow is not blurred away: it is measured on the frames whose surround is flat and
   bright (the shadow = the text shape, blurred, moved down, at a strength) and **divided out**, so the picture keeps
   its detail right up to the letters and only fill + outline are filled.
 - **A text that stays through many shots** (the legal line, `still` in ZONES.json): its letters are found once, on the
@@ -32,14 +33,21 @@ GitHub Actions run (`.github/workflows/erase.yml`), started by the caller's auto
 ## Checks that stop a job (`worker/run_job.py`)
 A job that would leave old words on screen stops with an error instead of delivering a file:
 - **caption coverage**, right after «measure zones»: `cfg.auto.captions` holds, per caption block, the share of the
-  frames that show caption letters and are under an erase. A block under one half = «captions not covered». A source
-  whose spoken word sits on a coloured box is named and counts as uncovered (this engine does not erase that box).
+  frames that show caption letters and are under an erase. A block under one half = «captions not covered» (by block
+  time, when no ringed letters can be counted: under one fifth, since a caption that comes and goes leaves its block
+  half empty). A caption the caller's own stills show with no erase within 0.3 s of it makes its block uncovered
+  (`reads_not_erased`: captions that sit in other rows on one shot, a page the measure missed). A source whose spoken
+  word sits on a coloured box of any strong colour is named and counts as uncovered (this engine does not erase that
+  box). A frame counts as «shows caption letters» only when its bright pieces look like letters: a white garment in
+  the caption rows is bright too, but one large piece.
 - **a block nobody could place**, right after «measure zones»: a translated block with no read, no covered band and
   no box of its own (`cfg.auto.unplaced`) would keep its old text under the new one.
 - **letters left on the plate**, after «check plate»: an outlined caption line found on any plate frame, or the
   letters of a `still` text still standing out on 3 or more sampled frames.
 The top-hat zones' residue (`plate.py --check`) stays a note in the job record: it also fires on textured ground.
 A spec may set `allowUncovered` / `allowResidue` for a hand check.
+Not caught yet: a caption page of one letter, or one that no still of the caller shows and that is much larger than
+the others; leftover letters of a headline or a call to action (a note only).
 
 ## Composite without an alpha video (difference matting)
 The overlay-only render body is rendered twice, over solid black (B) and solid white (W). Per channel
@@ -124,6 +132,10 @@ stills, shot changes, what the build covers) gets its cfg measured on the source
   across the block (at least half of its width) cuts the zone back on the side that costs it least. One that only
   meets a side or a corner (a price tag at the end of a headline's last line), and every source layer the build
   itself keeps («orig …»), is cut out of the zone exactly (+ 6 px around a read): the rest of the line is erased.
+- **Light letters on bright ground** (a headline's last line over white trousers) do not stand out; only their dark
+  shadow does, and it stayed as a grey word. The part of a light block that stands on bright ground (the strip right
+  beside it is bright, and the part's own 75th-percentile luma is at least 215) gets a second zone, inside the
+  block's rect, that takes dark thin shapes. The word is gone; a faint trace of the shadow's edge can stay.
 - **A block without a read** takes its own (rough) box from the analysis; with no box either it is counted in
   `cfg.auto.unplaced` and the job stops.
 A `cfg` next to `auto` is laid over the measured cfg key by key (a hand override).

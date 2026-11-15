@@ -349,6 +349,32 @@ def measure(frames, t0, t1, rect, k, polarity=None, holes=()):
     return z
 
 
+def bright_parts(frames, t0, t1, rect, line_px):
+    """The parts of rect whose letters stand on bright ground, as [x0, y0, x1, y1]. Light letters on bright ground do
+    not stand out; only their dark shadow does, and it stayed as a grey word. The ground under the letters cannot be
+    read through them (letters and shadows fill the row), so the strip right beside the block is read first: below
+    rect and above it (0.6 text lines tall), the column runs whose median luma is >= 200 in most sampled frames and
+    that are at least 1.5 lines wide give the 1.3 lines of rect next to them. Such a part counts only when it is
+    bright itself: its 75th-percentile luma >= 215 (letters over white trousers: 226 and 232; a headline over a red
+    cabinet with white cards right under it: 200, and there a dark zone would take the cabinet's own lines)."""
+    x0, y0, x1, y1 = rect; sel = [L for t, L in frames if t0 <= t < t1]
+    if not sel or y1 - y0 < 8 or x1 - x0 < 8 or not line_px: return []
+    sel = sel[:: max(1, len(sel) // 6)][:8]; H = sel[0].shape[0]; h = int(max(8, 0.6 * line_px)); out = []
+    for below in (True, False):
+        a, b = (min(H, y1 + 4), min(H, y1 + 4 + h)) if below else (max(0, y0 - 4 - h), max(0, y0 - 4))
+        if b - a < 6: continue
+        on = np.mean([np.median(L[a:b, x0:x1], axis=0) >= 200 for L in sel], axis=0) >= 0.6; run = None
+        for i, v in enumerate(list(on) + [False]):
+            if v and run is None: run = i
+            if not v and run is not None:
+                if i - run >= 1.5 * line_px:
+                    cx0, cx1 = max(x0, x0 + run - int(0.5 * line_px)), min(x1, x0 + i + int(0.5 * line_px))
+                    q = [cx0, max(y0, y1 - int(1.3 * line_px)), cx1, y1] if below else [cx0, y0, cx1, min(y1, y0 + int(1.3 * line_px))]
+                    if np.median([np.percentile(L[q[1]:q[3], q[0]:q[2]], 75) for L in sel]) >= 215: out.append(q)
+                run = None
+    return out
+
+
 def follow(src, W, H, t_lo, t_hi, rect, tpl, reach=(24, 140), fps=15, lim=0.6):
     """The path of a text line that slides into place. tpl = its settled picture (the pixels of rect in a frame that
     shows it whole); it is searched in every frame of [t_lo, t_hi) within reach px (x, y) of rect. Returns
@@ -441,7 +467,7 @@ def main():
         for s in scenes:
             if s['start'] <= t < s['end']: return s.get('type')
         return None
-    groups = a.get('groups', [])
+    groups = [g for g in a.get('groups', []) if g.get('box')]       # a read without a box places nothing
     def reads(role, t0, t1, text=None):
         g = [x for x in groups if x.get('role') == role and t0 - 0.05 <= float(x['t']) <= t1 + 0.05]
         if text:
@@ -506,6 +532,15 @@ def main():
             m = measure(frames, t0, t1, r, kernel_for(line_px), pol, holes)      # one measure for the whole block
             if m is None: cfg['auto']['zones'].append({'role': role, 't': [round(t0, 2), round(t1, 2)], 'skip': 'no text'}); return
             ms = m if isinstance(m, list) else [m]
+            # the parts of a light block that stand on bright ground get a second zone, inside the block's rect, that
+            # takes dark thin shapes: the letters' shadow (bright_parts())
+            if line_px and ms[0]['mode'] == 'light':
+                for part in bright_parts(frames, t0, t1, r, line_px):
+                    md = measure(frames, t0, t1, part, kernel_for(line_px), 'dark', holes)
+                    if isinstance(md, dict) and md['thr'] >= 14:
+                        for q in pieces(t0, t1, part)[0]:
+                            z = [round(t0, 3), round(t1 - t0, 3)] + [round(v * 100 / s_, 2) for v, s_ in zip(q, (W, H, W, H))] + ['dark', md['k'], md['thr'], md['grow'], 150]
+                            cfg['zones_extra'].append(z); cfg['auto']['zones'].append({'role': role + ' shadow', 'z': z})
         for q in rs:
             pct = [round(v * 100 / s, 2) for v, s in zip(q, (W, H, W, H))]
             for m in ms:
@@ -587,7 +622,8 @@ def main():
             # the share under a rect; the caller's block times are rough (a block may run on after its last page), so
             # the block's whole time counts only when no such letters are found in the video at all
             seen = caption_frames(SRC, W, H, cy0, cy1, win)
-            if len(seen) >= 0.3 * sum(e - s_ for s_, e in win) * FPS_C:
+            basis = 'letters' if len(seen) >= 0.3 * sum(e - s_ for s_, e in win) * FPS_C else 'time'
+            if basis == 'letters':
                 share = []
                 for a_, b_ in win:
                     fr_ = [t for t in seen if a_ - 0.05 <= t < b_ + 0.05]
@@ -595,8 +631,20 @@ def main():
             else:
                 share = [covered_share(a_, b_, sp) for a_, b_ in win]
             cfg['auto']['captions'] = {'style': 'plates' if PL else 'boxes / bare letters', 'blocks': len(win), 'share': share,
-                                       'letters_seen': len(seen)}
-        cfg['auto']['captions']['uncovered'] = sum(1 for v in cfg['auto']['captions']['share'] if v < 0.5)
+                                       'letters_seen': len(seen), 'basis': basis}
+        C = cfg['auto']['captions']
+        # a caption the caller's own stills show (a read at time t) with no erase within 0.3 s of it is an old caption
+        # left: it sits in other rows on that shot (dropped above as a stray read) or the measure missed it. Its block
+        # is uncovered. (An end-card line read as a caption is not one.)
+        spans = outlined or [(r[0], r[0] + r[1]) for r in cfg['caption_rects']]
+        lost = sorted({round(float(g['t']), 2) for g in groups if g.get('role') in CAPTION and scene_type(float(g['t'])) != 'packshot'
+                       and len(str(g.get('text') or '').strip()) >= 2 and not any(x - 0.3 <= float(g['t']) <= y + 0.3 for x, y in spans)})
+        for i, (a_, b_) in enumerate(win):
+            if any(a_ - 0.05 <= t <= b_ + 0.05 for t in lost): C['share'][i] = 0.0
+        if lost: C['reads_not_erased'] = lost
+        # by block time (no ringed letters to count frames by) a caption that comes and goes leaves its block half
+        # empty: there only a block that is almost bare (under a fifth of its time) counts as uncovered
+        C['uncovered'] = sum(1 for v in C['share'] if v < (0.2 if C.get('basis') == 'time' else 0.5))
         if boxed_word:
             cfg['auto']['captions'].update(style='word on a coloured box (not supported)', uncovered=len(win),
                                            boxes={'share': round(hshare, 2), 'spots': hspots})
@@ -672,8 +720,10 @@ def main():
                 elif dp:
                     c = dp[0]; xs = c.get('cols') or [0, 1000]
                     r = px({'ymin': c['band'][0], 'xmin': xs[0], 'ymax': c['band'][1], 'xmax': xs[1]}, 12, 10)
-                elif g:                                          # one odd read must not stretch the line: median box
-                    bs = [px(x['box'], 12, 10) for x in g]; r = [sorted(v)[len(v) // 2] for v in zip(*bs)]
+                elif g or reads(role, float(o['start']), float(o['end'])):   # one odd read must not stretch the line: median box;
+                    bs = [px(x['box'], 12, 10) for x in (g or reads(role, float(o['start']), float(o['end'])))]   # a shot without a read: the line's other reads
+                    r = [sorted(v)[len(v) // 2] for v in zip(*bs)]
+                elif o.get('box'): r = px(o['box'], 12, 10)                  # no read at all: the block's own box
                 else:
                     cfg['auto']['zones'].append({'role': role, 't': [t0, t1], 'skip': 'no read box'}); continue
                 # the legal line is white letters with a dark shadow (house style; grow 3 takes the shadow); a shot whose pixels
@@ -710,9 +760,9 @@ def main():
                     t0 = max(t0, min(float(o['start']) - 0.3, t1 - 0.1))
                     if not g: rt = r                       # no read: the block's own box, at a time it has settled
                     tr_ = float(g[0].get('t') or t0) if g else min(float(o['end']) - 0.3, float(o['start']) + 2.0)
-                    Lr = min(frames, key=lambda q: abs(q[0] - tr_))[1]
-                    path = first and follow(SRC, W, H, max(s0, float(o['start']) - 1.0), min(t1, float(o['start']) + 1.5), rt,
-                                            np.ascontiguousarray(Lr[rt[1]:rt[3], rt[0]:rt[2]]))
+                    Lr = min(frames, key=lambda q: abs(q[0] - tr_))[1] if frames else None
+                    path = first and Lr is not None and follow(SRC, W, H, max(s0, float(o['start']) - 1.0), min(t1, float(o['start']) + 1.5), rt,
+                                                               np.ascontiguousarray(Lr[rt[1]:rt[3], rt[0]:rt[2]]))
                     if path:
                         at = lambda p: [max(0, rt[0] + p[1] - 4), max(0, rt[1] + p[2] - 4), min(W, rt[2] + p[1] + 4), min(H, rt[3] + p[2] + 4)]
                         k = max([i for i, p in enumerate(path) if abs(p[1]) > 2 or abs(p[2]) > 2], default=-1) + 1
@@ -726,12 +776,13 @@ def main():
                             steps += [(path[i][0], path[i + 1][0], union([at(path[i]), at(path[i + 1])])) for i in range(k)]
                             calm = [(t, L) for t, L in frames if t_set + 0.25 <= t < t_set + 1.3]
                             flat = smooth_around(calm, 0, D + 1, union([q for _, _, q in steps]))
-                            for a_, b_, q in steps:
-                                if flat: add(a_, b_, q, role + ' entry', 0, full=True)
-                                else: add(a_, b_, q, role, line, pol=polarity(g))
+                            for a_, b_, q in steps:                 # never over a kept block that lies in its way
+                                if flat: add(a_, b_, clip_keep(a_, b_, q), role + ' entry', 0, full=True)
+                                else: add(a_, b_, clip_keep(a_, b_, q), role, line, pol=polarity(g))
                         cfg['auto'].setdefault('paths', []).append({'role': role, 'from': path[0][0], 'settled': t_set, 'steps': k,
                                                                     'start': [path[0][1], path[0][2]]})
-                        add(t_set, t1, clip_keep(t_set, t1, rt), role, line, pol=polarity(g))
+                        rs_ = motion_union(frames, t_set, t1, rt, tr_)      # a line that keeps moving once it is in
+                        add(t_set, t1, clip_keep(t_set, t1, rs_), role, line, pol=polarity(g))
                         continue
             add(t0, t1, clip_keep(t0, t1, r), role, line, pol=polarity(g))
             # while an end-card line comes in (blurred, dim, growing) its letters are below every letter threshold and
@@ -779,14 +830,54 @@ def bright_letters(f):
     return T.sum() / (w * h) >= 0.12 and h <= 170 and cols.min() > 2 and cols.max() < f.shape[1] - 3
 
 
+def bright_text(f, ch):
+    """bright_letters() of a crop whose bright pieces look like letters: at least three separate pieces between half
+    and 1.4 capital heights tall and no wider than two, their middles on one row (+- 0.3 capital heights). A white
+    garment, a shoe or a card in the caption rows is bright and stands out too, but as one large piece."""
+    if not bright_letters(f): return False
+    L = cv2.cvtColor(f, cv2.COLOR_BGR2GRAY)
+    T = ((L > 225) & (cv2.morphologyEx(L, cv2.MORPH_TOPHAT, TOPHAT_C) > 60) & ((f.max(2).astype(np.int16) - f.min(2)) < 45)).astype(np.uint8)
+    n, lab, st, cen = cv2.connectedComponentsWithStats(T, connectivity=8)
+    ys = [cen[i][1] for i in range(1, n) if 0.5 * ch <= st[i, 3] <= 1.4 * ch and st[i, 2] <= 2 * ch and st[i, 4] >= 0.1 * ch * ch]
+    return any(sum(1 for y in ys if abs(y - y0) <= 0.3 * ch) >= 3 for y0 in ys)
+
+
+def accent_colors(crops, ch):
+    """Fill colours other than white inside outlined caption lines (the spoken word in another colour), as [[b, g, r]],
+    two at most. In the crops with a line: strongly coloured pieces (channel spread >= 70, top channel >= 150) as tall
+    as a letter, on a line's rows and within four capital heights of it. A colour found in three crops or more counts
+    when, taken as a fill colour, its pieces become part of the lines captions.find() returns (the same dark outline
+    rings them). A coloured box behind a word is wider than a letter and never counts."""
+    seen = {}
+    for f in crops:
+        r = captions.find(f, ch)
+        if not r['lines']: continue
+        mx = f.max(2); S = ((mx >= 150) & (mx.astype(np.int16) - f.min(2) >= 70)).astype(np.uint8)
+        n, lab, st, _ = cv2.connectedComponentsWithStats(S, connectivity=8); here = {}
+        for i in range(1, n):
+            x, y, w, h, a = (int(v) for v in st[i])
+            if not 0.6 * ch <= h <= 1.3 * ch or w > 2 * ch or a < 0.1 * ch * ch: continue
+            if not any(ly0 - 0.3 * ch <= y and y + h <= ly1 + 0.3 * ch and lx0 - 4 * ch <= x + w / 2 <= lx1 + 4 * ch for lx0, ly0, lx1, ly1 in r['lines']): continue
+            c = np.median(f[lab == i], axis=0); here.setdefault(tuple(int(v) // 32 for v in c), []).append((c, lab == i))
+        for k, v in here.items(): seen.setdefault(k, []).append((f, v))
+    out = []
+    for k, hits in sorted(seen.items(), key=lambda q: -len(q[1])):
+        if len(hits) < 3 or len(out) == 2: continue
+        c = [int(round(v)) for v in np.median([c for _, v in hits for c, _ in v], axis=0)]
+        ok = sum(1 for f, v in hits[:8] if any((captions.find(f, ch, [c])['mask'] > 0)[m].mean() >= 0.5 for _, m in v))
+        if ok >= 0.5 * min(8, len(hits)): out.append(c)
+    return out
+
+
 def highlight_boxes(frames, lh):
     """Share of the caption frames (BGR crops of the caption rows) that show a coloured box behind a word: a compact
-    block of strong, bright colour (channel spread >= 90 with the top channel >= 200; measured on one test video: an
-    orange-to-pink box 126-232 / 104-230, a wooden floor beside it stays under), 1.1-2.4 text lines tall and at least 1.2 wide, filling its bbox once its letters are closed over, with
-    white letter fill inside it. Such a box moves from word to word; this engine does not erase it."""
+    block of strong colour (channel spread >= 90 with the top channel >= 110: orange, pink, purple, dark blue, green;
+    measured on one test video: an orange-to-pink box 126-232 / 104-230, a wooden floor beside it stays under), 1.1-2.4
+    text lines tall and at least 1.2 wide, filling its bbox once its letters are closed over, with white letter fill
+    inside it. Such a box moves from word to word; this engine does not erase it."""
     hit = 0; xs = set()
     for f in frames:
-        C = (((f.max(2).astype(np.int16) - f.min(2)) >= 90) & (f.max(2) >= 200)).astype(np.uint8)
+        C = (((f.max(2).astype(np.int16) - f.min(2)) >= 90) & (f.max(2) >= 110)).astype(np.uint8)
         n, lab, st, _ = cv2.connectedComponentsWithStats(cv2.morphologyEx(C, cv2.MORPH_CLOSE, np.ones((21, 21), np.uint8)), connectivity=8)
         for i in range(1, n):
             x, y, w, h, a = (int(v) for v in st[i])
@@ -807,7 +898,8 @@ def caption_frames(SRC, W, H, cy0, cy1, win):
 
 def outlined_captions(SRC, W, H, D, cy0, cy1, win, rb, cfg):
     """Outlined captions (captions.py). Found in at least half of the caption frames -> "cap" zones, cfg "cap",
-    the new caption layer's look, auto.captions; returns True. Else nothing is written and the caller measures boxes."""
+    the new caption layer's look, auto.captions; returns the time spans [[t0, t1]] in which a line was found. Else
+    nothing is written, False is returned and the caller measures boxes."""
     q0, q1 = max(0, cy0 - 80), min(H, cy1 + 80)
     fr = [(t, np.ascontiguousarray(f[..., ::-1]).astype(np.uint8)) for t, f in load_rgb(SRC, FPS_C, W, H, (q0, q1))
           if any(s - 0.05 <= t < e + 0.05 for s, e in win)]
@@ -815,10 +907,11 @@ def outlined_captions(SRC, W, H, D, cy0, cy1, win, rb, cfg):
     hs = [r['cap_h'] for r in (captions.find(f, 0) for _, f in fr[::2]) if r['lines']]
     if len(hs) < max(5, 0.5 * len(fr[::2])): return False
     ch = sorted(hs)[len(hs) // 2]
-    found = [(t, captions.find(f, ch)) for t, f in fr]
+    cols = accent_colors([f for _, f in fr[::2]], ch)       # the spoken word in another colour is a caption letter too
+    found = [(t, captions.find(f, ch, cols)) for t, f in fr]
     lines = [(t, l) for t, r in found for l in r['lines']]
     if len(lines) < 5: return False
-    fit = captions.fit_shadow([f for (t, f), (_, r) in zip(fr, found) if r['lines']], ch)
+    fit = captions.fit_shadow([f for (t, f), (_, r) in zip(fr, found) if r['lines']], ch, cols)
     reach = max(fit['reach'], 12) + 8                       # rows the zone needs past the lines: the shadow + fill context
     y0 = max(0, q0 + min(l[1] for _, l in lines) + int(0.45 * ch) - reach - int(fit['core']))
     y1 = min(H, q0 + max(l[3] for _, l in lines) - int(0.45 * ch) + reach + int(fit['core']) + 6)
@@ -831,18 +924,18 @@ def outlined_captions(SRC, W, H, D, cy0, cy1, win, rb, cfg):
         z = [round(a, 3), round(b - a, 3), 0, round(y0 * 100 / H, 2), 100, round(y1 * 100 / H, 2), 'cap', int(ch), 0, 0]
         cfg['zones_extra'].append(z); cfg['auto']['zones'].append({'role': 'subtitle', 'z': z})
     grow = 0 if fit['shadow'] else max(0, fit['reach'] - int(fit['core']))
-    cfg['cap'] = {'cap_h': int(ch), 'core': fit['core'], 'shadow': fit['shadow'], 'grow': grow, 'colors': []}
+    cfg['cap'] = {'cap_h': int(ch), 'core': fit['core'], 'shadow': fit['shadow'], 'grow': grow, 'colors': cols}
     # covered = of the frames that show caption letters at all (a line found, or bright letters that stand out of
     # their surround in the caption rows: the measure for bare letters), the share with a line. Captions that come and
     # go with the speech leave their block's time half empty: that is not a miss, so the block's time is not the measure
     b0, b1 = max(0, cy0 - 10 - q0), max(0, cy1 + 10 - q0)
-    seen = [(t, bool(r['lines']), bool(r['lines']) or bright_letters(f[b0:b1])) for (t, f), (_, r) in zip(fr, found)]
+    seen = [(t, bool(r['lines']), bool(r['lines']) or bright_text(f[b0:b1], ch)) for (t, f), (_, r) in zip(fr, found)]
     share = []
     for a, b in win:
         fb = [(ln, any_) for t, ln, any_ in seen if a - 0.05 <= t < b + 0.05 and any_]
         share.append(round(sum(1 for ln, _ in fb if ln) / len(fb), 2) if fb else 1.0)
     cfg['auto']['captions'] = {'style': 'outlined', 'blocks': len(win), 'share': share, 'letters_seen': sum(1 for _, _, x in seen if x),
-                               'cap_h': int(ch), 'fit': {k: fit[k] for k in ('core', 'shadow', 'reach', 'err', 'n')}}
+                               'cap_h': int(ch), 'colors': cols, 'fit': {k: fit[k] for k in ('core', 'shadow', 'reach', 'err', 'n')}}
     # the new caption layer takes the measured look: size from the capital height (0.70 em in heavy sans caps), the
     # house numbers when the measured shadow is the house one, else the measured outline and shadow
     tr = [e for e in rb['elements'] if e.get('type') == 'text' and e.get('transcript_source')]
@@ -865,7 +958,12 @@ def outlined_captions(SRC, W, H, D, cy0, cy1, win, rb, cfg):
             if sh: look.update({'shadow_color': f'rgba(0,0,0,{sh[1]:.2f})', 'shadow_blur': f'{2 * sh[2] / vmin:.2f} vmin', 'shadow_y': f'{sh[3] / vmin:.2f} vmin'})
             else: look.update({'shadow_color': None, 'shadow_blur': None, 'shadow_y': None})
         cfg.setdefault('text_set', {})['transcript'] = look
-    return True
+    spans = []
+    for t, r in found:
+        if not r['lines']: continue
+        if spans and t - spans[-1][1] <= 1.5 / FPS_C: spans[-1][1] = t
+        else: spans.append([t, t])
+    return spans
 
 
 def caption_rects(F, W, H, DT=1 / FPS_C):

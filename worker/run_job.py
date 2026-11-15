@@ -56,7 +56,7 @@ def http(method, url, body=None, headers=None, timeout=120, tries=4):
     """JSON request with retries on 429 / 5xx / network errors. Returns the parsed answer (or {} for an empty one)."""
     data = None if body is None else (body if isinstance(body, bytes) else json.dumps(body).encode())
     # Cloudflare in front of some APIs answers 403 «error code: 1010» to Python's default User-Agent
-    h = {'User-Agent': 'text-erase-worker/1 (+https://github.com/cybzhyto/text-erase-worker)', 'Accept': 'application/json'}
+    h = {'User-Agent': 'text-erase-worker/1', 'Accept': 'application/json'}
     if body is not None and not isinstance(body, bytes): h['Content-Type'] = 'application/json'
     h.update(headers or {})
     for k in range(tries):
@@ -168,6 +168,13 @@ def host(path, name):
     return up['file_url']
 
 
+def log_from(path, mark):
+    """The log's text from byte offset `mark` on. The log holds non-ASCII text (the new caption pages), so a character
+    offset into it is not a byte offset: read as characters, the check's first lines were cut off and its stops with them."""
+    with open(path, 'rb') as f:
+        f.seek(mark); return f.read().decode('utf-8', 'replace')
+
+
 def parse_check(text):
     """plate.py --check output -> {residue: [[zone, mode, t0, t1, frames, worst_t, worst_px]], offText: n}"""
     res = [[int(m[0]), m[1], float(m[2]), float(m[3]), int(m[4]), float(m[5]), int(m[6])] for m in
@@ -251,9 +258,9 @@ def main():
         run([sys.executable, f'{ENGINE}/plate.py', f'{W}/ov.zones.json', src, f'{W}/plate.mp4'])
 
         step('check plate')
-        mark = LOG.tell()
+        LOG.flush(); mark = os.path.getsize(f'{W}/log.txt')
         run([sys.executable, f'{ENGINE}/plate.py', f'{W}/ov.zones.json', src, f'{W}/plate.mp4', '--check', str(spec.get('check', 40))])
-        LOG.flush(); chk = parse_check(open(f'{W}/log.txt').read()[mark:])
+        LOG.flush(); chk = parse_check(log_from(f'{W}/log.txt', mark))
         say(f'check: {len(chk["residue"])} zones with residue, blur off the text in {chk["offText"]} frames')
         # outlined caption letters are found by their own shape, so one still found on the plate is an old word left:
         # a hard stop (the top-hat zones' residue above stays a note: it also fires on textured ground)

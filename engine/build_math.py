@@ -69,7 +69,7 @@ def patch(t, d, x0, y0, x1, y1, feather='1.2 vmin', radius='2 vmin'):
             "path": "M 0 0 L 100 0 L 100 100 L 0 100 Z", "border_radius": radius, "fill_color": "#fff", "blur": feather}
 def layer(track, blur, overlay, shapes):
     # a mask comp with no active child is skipped by Creatomate and the layer shows UNMASKED (whole frame blurred,
-    # seen on render ad6da2d2): keep one invisible 1 % corner square alive for the whole duration
+    # seen on one render): keep one invisible 1 % corner square alive for the whole duration
     keeper = {"type": "shape", "track": 1, "time": 0, "duration": D, "x": "0.5%", "y": "0.5%", "width": "1%", "height": "1%",
               "path": "M 0 0 L 100 0 L 100 100 L 0 100 Z", "fill_color": "rgba(255,255,255,0.01)"}
     shapes = [keeper] + [dict({"type": "shape", "track": i + 2}, **{k: v for k, v in sh.items() if k != 'type'}) for i, sh in enumerate(shapes)]

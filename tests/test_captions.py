@@ -43,7 +43,7 @@ def draw(bg, text, y=120, outline=4, shadow=SHADOW):
 class Find(unittest.TestCase):
     def test_a_line_is_found_on_every_ground(self):
         for kind in ('white', 'black', 'tan', 'split', 'texture'):
-            f, bb = draw(ground(kind), 'WHEN YOUR CLOTHES')
+            f, bb = draw(ground(kind), 'SEVEN GREEN BOXES')
             r = captions.find(f, 0)
             self.assertEqual(len(r['lines']), 1, kind)
             x0, y0, x1, y1 = r['lines'][0]
@@ -60,7 +60,7 @@ class Find(unittest.TestCase):
         self.assertEqual(captions.find(np.asarray(page), 47)['lines'], [])
 
     def test_punctuation_joins_the_line_but_a_dot_beside_it_does_not(self):
-        f, bb = draw(ground('tan'), 'CHANGE IT BACK."')
+        f, bb = draw(ground('tan'), 'MOVE IT LEFT."')
         r = captions.find(f, 0)
         self.assertEqual(len(r['lines']), 1)
         self.assertGreaterEqual(r['lines'][0][2], bb[2])                    # the closing quote is inside the line
@@ -72,7 +72,7 @@ class Find(unittest.TestCase):
 
 class Erase(unittest.TestCase):
     def test_no_line_is_left_and_a_white_page_comes_back_white(self):
-        bg = ground('white'); f, bb = draw(bg, 'ALREADY PLANNED.')
+        bg = ground('white'); f, bb = draw(bg, 'QUIETLY SORTED.')
         fit = captions.fit_shadow([f], 0 or captions.find(f, 0)['cap_h'])
         self.assertIsNotNone(fit['shadow'])
         out, n = captions.erase(f, captions.find(f, 0)['cap_h'], (), fit['shadow'], fit['core'], 0)
@@ -81,7 +81,7 @@ class Erase(unittest.TestCase):
         self.assertLess(float(np.percentile(np.abs(out.astype(np.float32) - bg), 99.5)), 40)
 
     def test_texture_next_to_the_letters_keeps_its_detail(self):
-        bg = ground('texture'); f, bb = draw(bg, 'NO MORE RANDOM')
+        bg = ground('texture'); f, bb = draw(bg, 'TWO SMALL ROUND')
         cap_h = captions.find(f, 0)['cap_h']
         out, n = captions.erase(f, cap_h, (), [3.0, SHADOW[0], SHADOW[1], SHADOW[2]], 7.0, 0)
         self.assertEqual(captions.find(out, 0)['lines'], [])
@@ -91,7 +91,7 @@ class Erase(unittest.TestCase):
         self.assertLess(float(err.mean()), 6.0)                                                # the real pixels, shadow divided out
 
     def test_without_a_shadow_model_the_letters_are_filled_with_a_grown_mask(self):
-        f, bb = draw(ground('tan'), 'SOMEONE ELSE.')
+        f, bb = draw(ground('tan'), 'ANOTHER DAY.')
         out, n = captions.erase(f, captions.find(f, 0)['cap_h'], (), None, 7.0, 16)
         self.assertEqual(captions.find(out, 0)['lines'], [])
 
@@ -102,13 +102,13 @@ class Erase(unittest.TestCase):
 
 class Shadow(unittest.TestCase):
     def test_the_fit_finds_the_drawn_shadow_and_none_where_there_is_none(self):
-        frames = [draw(ground('white'), t)[0] for t in ('EVERY OUTFIT IS', 'CAPSULE FROM', '10-PIECE FALL')]
+        frames = [draw(ground('white'), t)[0] for t in ('EACH LITTLE BOX', 'MADE FOR NOW', '12-PART TEST')]
         cap_h = captions.find(frames[0], 0)['cap_h']
         fit = captions.fit_shadow(frames, cap_h)
         self.assertIsNotNone(fit['shadow']); r, A, sig, dy = fit['shadow']
         self.assertLess(abs(A - SHADOW[0]), 0.2); self.assertLess(abs(sig - SHADOW[1]), 3.5)
         self.assertLessEqual(fit['err'], 3.0)
-        bare = [draw(ground('white'), t, shadow=None)[0] for t in ('EVERY OUTFIT IS', 'CAPSULE FROM')]
+        bare = [draw(ground('white'), t, shadow=None)[0] for t in ('EACH LITTLE BOX', 'MADE FOR NOW')]
         self.assertIsNone(captions.fit_shadow(bare, cap_h)['shadow'])
 
 
@@ -119,19 +119,16 @@ class Fill(unittest.TestCase):
         self.assertGreater(float(F[60:360, 60:840].min()), 100)
 
 
-if __name__ == '__main__':
-    unittest.main()
-
 
 # ---- engine/auto_zones.py: the measures round the caption detector ----
 import auto_zones
 
 
-def boxed_word(x, text='OVER'):
-    """A tan frame with a white line of text whose one word sits on an orange-to-pink box at x."""
+def boxed_word(x, text='OVER', c0=(48, 136, 232), c1=(155, 104, 230)):
+    """A tan frame with a white line of text whose one word sits on a coloured box at x (orange to pink unless told)."""
     img = Image.fromarray(ground('tan')); d = ImageDraw.Draw(img)
     w = int(d.textlength(text, font=FONT)) + 40
-    grad = np.linspace(0, 1, w)[None, :, None] * (np.array([155, 104, 230]) - np.array([48, 136, 232])) + np.array([48, 136, 232])
+    grad = np.linspace(0, 1, w)[None, :, None] * (np.array(c1) - np.array(c0)) + np.array(c0)
     a = np.asarray(img).copy(); a[70:170, x:x + w] = np.clip(grad, 0, 255).astype(np.uint8)
     img = Image.fromarray(a); d = ImageDraw.Draw(img)
     d.text((x + 20, 120), text, font=FONT, anchor='lm', fill=(255, 255, 255))
@@ -143,12 +140,42 @@ class Measures(unittest.TestCase):
         boxed = [boxed_word(x) for x in (80, 240, 400, 560, 720)]
         share, spots = auto_zones.highlight_boxes(boxed, 65)
         self.assertGreaterEqual(share, 0.8); self.assertGreaterEqual(spots, 3)
-        plain = [draw(ground(k), 'WHEN YOUR CLOTHES')[0] for k in ('tan', 'white', 'black', 'texture', 'split')]
+        plain = [draw(ground(k), 'SEVEN GREEN BOXES')[0] for k in ('tan', 'white', 'black', 'texture', 'split')]
         self.assertEqual(auto_zones.highlight_boxes(plain, 65), (0.0, 0))
 
+    def test_a_dark_coloured_box_is_seen_too(self):
+        for c in ((60, 30, 150), (150, 50, 120), (40, 140, 60)):          # dark blue, purple, green (as drawn: b, g, r)
+            share, spots = auto_zones.highlight_boxes([boxed_word(x, c0=c, c1=c) for x in (80, 240, 400, 560, 720)], 65)
+            self.assertGreaterEqual(share, 0.8, c); self.assertGreaterEqual(spots, 3, c)
+
+    def test_a_knit_top_in_the_caption_rows_is_bright_but_is_not_text(self):
+        knit = ground('tan')
+        for y in range(40, 200, 14): knit[y:y + 6, 300:780] = 250           # thin bright ribs, as wide as a garment
+        self.assertTrue(auto_zones.bright_letters(knit))
+        self.assertFalse(auto_zones.bright_text(knit, 54))
+        bare = draw(ground('black'), 'ANOTHER DAY.', shadow=None, outline=0)[0]
+        self.assertTrue(auto_zones.bright_text(bare, captions.find(draw(ground('black'), 'ANOTHER DAY.')[0], 0)['cap_h']))
+
+    def test_the_spoken_word_in_another_colour_is_a_fill_colour(self):
+        def two_tone(kind, left, right):
+            f, _ = draw(ground(kind), left + ' ' + right)
+            d = ImageDraw.Draw(Image.new('L', (W, H), 0)); x = W // 2 - d.textlength(left + ' ' + right, font=FONT) / 2 + d.textlength(left + ' ', font=FONT)
+            m = Image.new('L', (W, H), 0); ImageDraw.Draw(m).text((x, 120), right, font=FONT, anchor='lm', fill=255)
+            f[np.asarray(m) > 128] = (0, 220, 255)                           # yellow, b g r
+            return f
+        frames = [two_tone(k, 'TAKE THE', 'RED') for k in ('tan', 'texture', 'black', 'split')]
+        ch = captions.find(draw(ground('tan'), 'TAKE THE RED')[0], 0)['cap_h']
+        cols = auto_zones.accent_colors(frames, ch)
+        self.assertEqual(len(cols), 1)
+        self.assertLessEqual(max(abs(a - b) for a, b in zip(cols[0], (0, 220, 255))), 40)
+        r = captions.find(frames[0], ch, cols)                               # with it, the whole line is letters
+        w = captions.find(frames[0], ch)
+        self.assertGreater(int((r['mask'] > 0).sum()), 1.2 * int((w['mask'] > 0).sum()))
+        self.assertEqual(auto_zones.accent_colors([draw(ground(k), 'TAKE THE RED')[0] for k in ('tan', 'texture', 'black', 'split')], ch), [])
+
     def test_bright_letters_are_seen_on_dark_ground_and_not_on_a_bare_frame(self):
-        self.assertTrue(auto_zones.bright_letters(draw(ground('black'), 'SOMEONE ELSE.', shadow=None)[0]))
-        self.assertTrue(auto_zones.bright_letters(draw(ground('tan'), 'SOMEONE ELSE.')[0]))
+        self.assertTrue(auto_zones.bright_letters(draw(ground('black'), 'ANOTHER DAY.', shadow=None)[0]))
+        self.assertTrue(auto_zones.bright_letters(draw(ground('tan'), 'ANOTHER DAY.')[0]))
         for kind in ('white', 'black', 'tan', 'texture'):
             self.assertFalse(auto_zones.bright_letters(ground(kind)), kind)
 
@@ -156,3 +183,7 @@ class Measures(unittest.TestCase):
         self.assertEqual(auto_zones.covered_share(0, 10, [(0, 4), (3, 6), (9, 12)]), 0.7)
         self.assertEqual(auto_zones.covered_share(5, 5, []), 1.0)
         self.assertEqual(auto_zones.covered_share(0, 10, []), 0.0)
+
+
+if __name__ == '__main__':
+    unittest.main()

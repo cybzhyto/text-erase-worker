@@ -169,7 +169,8 @@ def erase_mask(bgr, mask, shadow=None, core=7.0, grow=0):
 
 
 def profile(bgr, cap_h, colors=()):
-    """Median luma by distance (1..45 px) from the letters' fill, None per distance without pixels; None with no line."""
+    """What the shadow fit reads off one crop: (luma, distance of every pixel from the letters' fill, the box within
+    40 px of the first line); None with no line."""
     r = find(bgr, cap_h, colors)
     if not r['lines']: return None
     L = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY).astype(np.float32)
