@@ -70,6 +70,55 @@ class Find(unittest.TestCase):
         self.assertFalse(r2['mask'][114:126, cx - 5:cx + 5].any())
 
 
+    def test_a_question_mark_that_ends_a_line_is_taken_whole(self):
+        # a caption font whose «?» hook is shorter than its capitals (about 0.68 of them, its dot below): the hook is
+        # neither a capital nor small punctuation, and it stayed on the plate next to the erased line
+        for kind in ('tan', 'texture', 'white'):
+            f, bb = draw(ground(kind), 'WHERE IS THE KEY')
+            ch = captions.find(f, 0)['cap_h']; top = bb[1]
+            hook = Image.new('L', (W, H), 0); dh = ImageDraw.Draw(hook)
+            x = bb[2] + 10; hw = int(0.5 * ch); hh = int(0.66 * ch)
+            dh.arc([x, top, x + hw, top + int(0.55 * ch)], 200, 90, fill=255, width=9)
+            dh.line([x + hw // 2, top + int(0.5 * ch), x + hw // 2, top + hh], fill=255, width=9)
+            dh.ellipse([x + hw // 2 - 6, top + ch - 12, x + hw // 2 + 6, top + ch], fill=255)
+            sh = cv2.dilate(np.asarray(hook), np.ones((9, 9), np.uint8)) > 0
+            g = f.copy(); g[sh] = (0, 0, 0); g[np.asarray(hook) > 0] = (255, 255, 255)
+            r = captions.find(g, ch)
+            isl, lab = captions.islands(g)
+            hf = np.asarray(hook) > 128
+            q = [i for i in isl if i[0] >= x - 2 and (hf[lab == i[6]]).mean() > 0.5]          # the drawn glyph's own islands
+            self.assertGreaterEqual(len(q), 2, kind)                                            # its hook and its dot
+            self.assertTrue(any(i[3] - i[1] > 0.6 * ch for i in q), kind)
+            for i in q: self.assertTrue((r['mask'][lab == i[6]] > 0).all(), (kind, i))
+
+    def test_a_last_capital_with_a_paler_ring_joins_the_line(self):
+        f, bb = draw(ground('white'), 'BRING THE BLUE KITE')
+        ch = captions.find(f, 0)['cap_h']
+        isl, lab = captions.islands(f)
+        last = max((q for q in isl if q[3] - q[1] > 0.72 * ch), key=lambda q: q[2])
+        c = (lab == last[6]).astype(np.uint8)
+        ring = (cv2.dilate(c, captions.K7) > 0) & (cv2.dilate(c, captions.K3) == 0)
+        ys, xs = np.nonzero(ring); pale = xs > np.percentile(xs, 60)          # part of its ring is not dark
+        g = f.copy(); g[ys[pale], xs[pale]] = (175, 175, 175)
+        q = [x for x in captions.islands(g)[0] if x[6] == last[6]][0]
+        self.assertTrue(captions.RING_IN <= q[5] < captions.RING, q)
+        r = captions.find(g, ch)
+        self.assertTrue((r['mask'][lab == last[6]] > 0).all())
+
+    def test_the_counters_of_an_app_pages_own_words_are_not_the_captions(self):
+        page = Image.fromarray(ground('white')); d = ImageDraw.Draw(page)
+        small = ImageFont.load_default(size=34)
+        d.text((W // 2 - 120, 164), 'Oak bed', font=small, anchor='mm', fill=(20, 20, 20))      # under the caption's base
+        d.text((W // 2 + 60, 74), 'blue door', font=small, anchor='mm', fill=(20, 20, 20))   # over its top
+        page_only = np.asarray(page).copy()
+        f, bb = draw(page_only, 'PAINT A HOUSE')
+        r = captions.find(f, 0)
+        own = (page_only.max(2) > 200) & (cv2.dilate((page_only.max(2) < 120).astype(np.uint8), np.ones((9, 9), np.uint8)) > 0)
+        isl, lab = captions.islands(page_only)                          # the white counters of the page's letters
+        cnt = [x for x in isl if x[5] >= captions.RING_IN and x[3] - x[1] < 0.4 * r['cap_h']]
+        self.assertGreater(len(cnt), 3)
+        for x in cnt: self.assertFalse((r['mask'][lab == x[6]] > 0).any(), x)
+
 class Erase(unittest.TestCase):
     def test_no_line_is_left_and_a_white_page_comes_back_white(self):
         bg = ground('white'); f, bb = draw(bg, 'QUIETLY SORTED.')
@@ -100,6 +149,20 @@ class Erase(unittest.TestCase):
         self.assertEqual(n, 0); self.assertIs(out, g)
 
 
+    def test_an_app_pages_words_next_to_the_letters_stay_dark(self):
+        page = Image.fromarray(ground('white')); d = ImageDraw.Draw(page)
+        small = ImageFont.load_default(size=30)
+        d.text((W // 2, 80), 'Pick a colour for the tall shelf', font=small, anchor='mm', fill=(15, 15, 15))
+        page_only = np.asarray(page).copy()
+        f, bb = draw(page_only, 'PAINT A HOUSE')
+        ch = captions.find(f, 0)['cap_h']
+        out, n = captions.erase(f, ch, (), [3.0, SHADOW[0], SHADOW[1], SHADOW[2]], 7.0, 0)
+        dd = cv2.distanceTransform((captions.find(f, 0)['mask'] == 0).astype(np.uint8), cv2.DIST_L2, 5)
+        words = (page_only.max(2) < 100) & (dd > 7.0 + 3) & (dd <= 7.0 + 9)   # the page's letters just off the outline
+        self.assertGreater(int(words.sum()), 100)
+        kept = (out.max(2) < 140)[words].mean()
+        self.assertGreater(float(kept), 0.9)
+
 class Shadow(unittest.TestCase):
     def test_the_fit_finds_the_drawn_shadow_and_none_where_there_is_none(self):
         frames = [draw(ground('white'), t)[0] for t in ('EACH LITTLE BOX', 'MADE FOR NOW', '12-PART TEST')]
@@ -111,6 +174,24 @@ class Shadow(unittest.TestCase):
         bare = [draw(ground('white'), t, shadow=None)[0] for t in ('EACH LITTLE BOX', 'MADE FOR NOW')]
         self.assertIsNone(captions.fit_shadow(bare, cap_h)['shadow'])
 
+
+class LeftGlyphs(unittest.TestCase):
+    def test_a_glyph_left_whole_next_to_an_erased_line_is_found_and_page_things_are_not(self):
+        f, bb = draw(ground('tan'), 'WHERE IS THE KEY?')
+        ch = captions.find(f, 0)['cap_h']
+        q = draw(ground('tan'), 'WHERE IS THE KEY?', shadow=None)[0]
+        left = ground('tan').copy(); x0 = bb[2] - int(0.6 * ch); left[:, x0:] = q[:, x0:]       # only the «?» stays
+        self.assertTrue(captions.left_glyphs(f, left, ch))
+        part = left.copy(); part[:, x0:x0 + int(0.35 * ch)] = ground('tan')[:, x0:x0 + int(0.35 * ch)]   # half its ring gone
+        self.assertTrue(captions.left_glyphs(f, part, ch))
+        self.assertEqual(captions.left_glyphs(f, ground('tan'), ch), [])                       # a clean plate
+        page = Image.fromarray(ground('tan')); dr = ImageDraw.Draw(page)                        # a radio button 2 capitals past it
+        cx = bb[2] + 2 * ch; dr.ellipse([cx - 22, 98, cx + 22, 142], fill=(0, 0, 0)); dr.ellipse([cx - 14, 106, cx + 14, 134], fill=(255, 255, 255))
+        self.assertEqual(captions.left_glyphs(f, np.asarray(page), ch), [])
+        self.assertEqual(captions.left_glyphs(ground('tan'), left, ch), [])                    # no caption in the source
+        gap = ground('white'); gap[52:126, 300:400] = 40; gap[62:116, 318:382] = 253          # a white gap ringed by a dark photo, off the line
+        fw, _ = draw(ground('white'), 'WHERE IS THE KEY?')
+        self.assertEqual(captions.left_glyphs(fw, gap, ch), [])
 
 class Fill(unittest.TestCase):
     def test_a_hole_wider_than_the_pyramid_reaches_is_not_black(self):

@@ -338,6 +338,7 @@ if '--check' in sys.argv:
             for hx0, hy0, hx1, hy1 in q.get('holes', []): ok[max(0, hy0):max(0, hy1), max(0, hx0):max(0, hx1)] = 0
         n = int((d & (ok == 0)).sum())
         if n > 300: off.append((round(j / FPS, 2), n))
+    lone = collections.defaultdict(list)          # outlined caption glyphs left whole next to an erased line
     for b in iter(lambda: p.stdout.read(W * H * 3), b''):
         if len(b) < W * H * 3: break
         j, SI = next(src); PI = np.frombuffer(b, np.uint8).reshape(H, W, 3)
@@ -345,7 +346,16 @@ if '--check' in sys.argv:
         dd = cv2.GaussianBlur(cv2.absdiff(cv2.cvtColor(SI, cv2.COLOR_BGR2GRAY), cv2.cvtColor(PI, cv2.COLOR_BGR2GRAY)), (5, 5), 0) > 22
         win[j] = (dd, cut)
         if j - R in win: judge(j - R); win.pop(j - 2 * R - 1, None)
+        if j % 2 == 0:                                # every 2nd frame: a left glyph stays for its caption page
+            for i in CAPZ:
+                if not on(Z[i], j / FPS): continue
+                x0, y0, x1, y1 = cap_rect(Z[i])
+                g = captions.left_glyphs(SI[y0:y1, x0:x1], PI[y0:y1, x0:x1], Z[i][7], CAP.get('colors') or ())
+                if g: lone[i].append((round(j / FPS, 2), sum(q[4] for q in g)))
     for j in sorted(k for k in win if k > max(win) - R): judge(j)
+    for i, h in sorted(lone.items()):                 # 2 sampled frames = at least 3 frames: listed as caption residue
+        if len(h) >= 2:
+            z = Z[i]; print('zone %d cap %.2f-%.2f rect %s: %d frames, worst %s (a glyph left next to the erased line)' % (i, z[0], z[1], z[2:6], len(h), max(h, key=lambda q: q[1])))
     print('check: blur off the text in %d frames %s' % (len(off), off[:20]) if off else 'check: no blur off the text')
     sys.exit()
 if '--at' in sys.argv:
