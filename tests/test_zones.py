@@ -112,5 +112,42 @@ class Follow(unittest.TestCase):
         self.assertIsNone(az.follow('none', W, H, 10.0, 11.4, self.rect, np.full_like(self.tpl, 24)))
 
 
+
+class StillBlock(unittest.TestCase):
+    """main() on drawn frames: a light headline that stays in place gets one mask for its time, a moving one gets zones."""
+    def run_main(self, ys):
+        import json, tempfile
+        frames = []                                         # 4 fps, 4 s, two shots: a dark wall, then a mid-grey one
+        for i in range(16):
+            f, rect = line('Plain Sample Words', y=ys[i // 8], level=250, bg=40 if i < 8 else 110); frames.append((i / 4, f))
+        box = lambda r: {'xmin': r[0] * 1000 / W, 'ymin': r[1] * 1000 / H, 'xmax': r[2] * 1000 / W, 'ymax': r[3] * 1000 / H}
+        r0 = line('Plain Sample Words', y=ys[0])[1]; r1 = line('Plain Sample Words', y=ys[1])[1]
+        a = {'overlays': [{'role': 'headline', 'start': 0, 'end': 4, 'text': 'Plain Sample Words', 'box': box(r0)}],
+             'groups': [{'t': 1.0, 'role': 'headline', 'text': 'Plain Sample Words', 'box': box(r0), 'lines': 1, 'color': '#fafafa', 'surround': '#282828'},
+                        {'t': 3.0, 'role': 'headline', 'text': 'Plain Sample Words', 'box': box(r1), 'lines': 1, 'color': '#fafafa', 'surround': '#6e6e6e'}],
+             'cuts': [{'from': 2.0, 'to': 2.0}], 'scenes': [{'start': 0, 'end': 2, 'type': 'people'}, {'start': 2, 'end': 4, 'type': 'people'}]}
+        rb = {'width': W, 'height': H, 'duration': 4.0, 'frame_rate': 30, 'elements': []}
+        real, argv = az.load_gray, sys.argv
+        with tempfile.TemporaryDirectory() as d:
+            for name, obj in (('a', a), ('rb', rb)):
+                with open(f'{d}/{name}.json', 'w') as fh: json.dump(obj, fh)
+            az.load_gray = lambda src, fps, w, h, rows=None, span=None: frames
+            sys.argv = ['auto_zones.py', d + '/a.json', d + '/rb.json', 'none.mp4', d + '/cfg.json']
+            try: az.main()
+            finally: az.load_gray, sys.argv = real, argv
+            with open(d + '/cfg.json') as fh: return json.load(fh)
+
+    def test_a_headline_that_stays_in_place_is_one_still_text(self):
+        cfg = self.run_main((640, 640))
+        self.assertEqual([s['role'] for s in cfg.get('still', [])], ['headline'])
+        s = cfg['still'][0]
+        self.assertEqual(s['times'], [[0, 4.0]]); self.assertEqual(s['min_left'], 0.4)
+        self.assertEqual([z for z in cfg['auto']['zones'] if 'z' in z], [])            # and no zone per shot for it
+
+    def test_a_headline_that_sits_elsewhere_on_the_second_shot_gets_zones(self):
+        cfg = self.run_main((640, 900))
+        self.assertEqual(cfg.get('still', []), [])
+        self.assertEqual(len([z for z in cfg['auto']['zones'] if 'z' in z and z['role'] == 'headline']), 2)
+
 if __name__ == '__main__':
     unittest.main()

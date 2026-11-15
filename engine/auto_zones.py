@@ -693,7 +693,40 @@ def main():
         cfg['auto']['zones'].append({'role': 'disclaimer', 'still': [[round(t, 2), round(t + d, 2)] for t, d in times], 'rect': r})
         for o in os_: still_ok[id(o)] = True
 
-    # 2) every other translated block: one zone per shot over its read boxes
+    def still_block(o, role, o0, o1):
+        """A light-lettered block that stays in one place for all of its time gets ONE letter mask for that time (a
+        "still" text, as the legal line has), not a zone per shot. A zone's mask is the letters that stand out on its
+        own shot, grown a few px: over a white wall half of a headline's letters do not stand out, and the letters' dark
+        shadow past the grown mask stayed as a row of dark specks on every ground. With one mask, found on the frames
+        where the letters do stand out, every letter is filled on every frame, and plate.py takes what is left of the
+        shadow next to it. Not for a block on the end card (it slides in), under a second long, without reads, with
+        reads that disagree (it moves), with dark letters, or that motion_union() sees move more than 6 px.
+        Returns True when the entry was written (the caller then writes no zones for the block)."""
+        if o1 - o0 < 1.0 or scene_type(o0) == 'packshot' or scene_type(o1 - 0.05) == 'packshot': return False
+        g = reads(role, o0, o1, o.get('text'))
+        if not g: return False
+        bs = [px(x['box'], 12, 10) for x in g]; r = union(bs)
+        if any(abs(b[k] - r[k]) > 0.03 * H for b in bs for k in (1, 3)): return False
+        u = motion_union(frames, o0, o1, r, g[0].get('t'))
+        if any(abs(a_ - b_) > 6 for a_, b_ in zip(u, r)): return False
+        r = clip_keep(o0, o1, [max(0, u[0]), max(0, u[1]), min(W, u[2]), min(H, u[3])])
+        if r is None: return False
+        kept = pieces(o0, o1, r)[1]
+        line = max((px(x['box'])[3] - px(x['box'])[1]) / max(1, int(x.get('lines') or 1)) for x in g)
+        m = measure(frames, o0, o1, r, kernel_for(line), polarity(g), kept)
+        ms = m if isinstance(m, list) else [m]
+        if not m or ms[0]['mode'] != 'light': return False
+        pc = lambda q: [round(v * 100 / s_, 2) for v, s_ in zip(q, (W, H, W, H))]
+        e = {'role': role, 'rect_pct': pc(r), 'times': [[round(o0, 3), round(o1 - o0, 3)]], 'k': ms[0]['k'], 'thr': ms[0]['thr'],
+             'lmin': ms[0]['lmin'], 'grow': ms[0]['grow'], 'core0': 7.0, 'min_left': 0.4}
+        if len(ms) > 1 and ms[1]['mode'] == 'light': e.update(thr2=ms[1]['thr'], lmin2=ms[1]['lmin'])   # near-white fill on bright ground
+        if kept: e['holes_pct'] = [pc(k) for k in kept]
+        cfg.setdefault('still', []).append(e)
+        cfg['auto']['zones'].append({'role': role, 'still': [[round(o0, 2), round(o1, 2)]], 'rect': r})
+        return True
+
+    # 2) every other translated block: one mask for all of its time when it stays in place (still_block), else one
+    # zone per shot over its read boxes
     for o in sorted(a.get('overlays', []), key=lambda o: o.get('role') != 'price'):   # full zones first: holes
         role = o.get('role')
         if role in CAPTION or role in KEEP and role != 'price': continue
@@ -704,6 +737,7 @@ def main():
         pc = max([c for c in cuts if c < o0 + 0.05] + [0.0]); nc = min([c for c in cuts if c > o1 - 0.05] + [D])
         if 0 < o0 - pc <= 0.2: o0 = pc
         if 0 < nc - o1 <= (0.5 if nc == D else 0.2): o1 = nc
+        if role not in ('price', 'disclaimer') and still_block(o, role, o0, o1): continue
         for t0, t1 in shots(o0, o1, cuts):
             if role == 'price':
                 if (o.get('text') or '').strip() not in lifted_txt: continue

@@ -27,6 +27,12 @@ GitHub Actions run (`.github/workflows/erase.yml`), started by the caller's auto
 - **A text that stays through many shots** (the legal line, `still` in ZONES.json): its letters are found once, on the
   shots where they stand out, and that one mask erases the line in every frame of its time. On a white page such a
   line is only its grey shadow, and a zone measured on that shot alone found dark specks or nothing.
+  A **light-lettered block that stays in one place** (a headline, a call to action outside the end card, a second or
+  longer, its reads agreeing, no move over 6 px) is erased the same way: a zone per shot took only the letters that
+  stood out on that shot, grown a few px, so over a white wall half of the letters stayed and on every ground the
+  letters' dark shadow stayed as a row of specks or as a readable grey word. Its mask also takes near-white fill
+  on bright ground (a second, low threshold), leaves out what the build keeps inside its rect, and counts as left
+  on the plate only when 40 % of it still stands out (a filled patch between darker things stands out a little).
 - **A translucent caption plate** (zone mode `exact`): the whole plate with its letters, on its page's own frames
   only (a `full` zone is also erased on the 2 frames before and after it).
 
@@ -132,7 +138,7 @@ stills, shot changes, what the build covers) gets its cfg measured on the source
   across the block (at least half of its width) cuts the zone back on the side that costs it least. One that only
   meets a side or a corner (a price tag at the end of a headline's last line), and every source layer the build
   itself keeps («orig …»), is cut out of the zone exactly (+ 6 px around a read): the rest of the line is erased.
-- **Light letters on bright ground** (a headline's last line over white trousers) do not stand out; only their dark
+- **Light letters on bright ground**, in a block that is erased by zones (it moves, or is on the end card): they do not stand out; only their dark
   shadow does, and it stayed as a grey word. The part of a light block that stands on bright ground (the strip right
   beside it is bright, and the part's own 75th-percentile luma is at least 215) gets a second zone, inside the
   block's rect, that takes dark thin shapes. The word is gone; a faint trace of the shadow's edge can stay.

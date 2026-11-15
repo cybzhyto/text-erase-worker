@@ -10,7 +10,9 @@ zones: [t0, t1, x0, y0, x1, y1 (px), mode light|dark|both|full|exact, k (morph k
         mode cap = outlined caption letters (captions.py): k = their capital height in px; the zone rect is the band
         the captions live in, the letters are found in every frame wherever they are. ZONES.json "cap" = {colors,
         core, shadow, grow}: with a shadow model the soft shadow is divided out and only the letters are filled.
-        ZONES.json "still" = [{rect [x0, y0, x1, y1] px, times [[t0, t1]], k, thr, lmin}]: a text that stays the same
+        ZONES.json "still" = [{rect [x0, y0, x1, y1] px, times [[t0, t1]], k, thr, lmin, + thr2, lmin2 (a second
+        detector: near-white fill on bright ground), holes [px rects kept inside it], core0 (outline reach, 2.5 unless
+        given), min_left (share of the mask that must still stand out to count as left, 0.15 unless given)}]: a text that stays the same
         through many shots (the legal line). Its letters are found once, on the shots where they stand out, and that
         one mask erases it in every frame of its times; its soft shadow is measured on the flattest frames and divided
         out. On a white page such a text is only its grey shadow: no per-frame mask finds the letters there.
@@ -74,16 +76,21 @@ def still_prepare():
             x0, y0, x1, y1 = g['rect']; k = g.get('k', 15); pad = k
             X0, Y0, X1, Y1 = max(0, x0 - pad), max(0, y0 - pad), min(W, x1 + pad), min(H, y1 + pad)
             L = cv2.cvtColor(I[Y0:Y1, X0:X1], cv2.COLOR_BGR2GRAY)
-            sel = ((cv2.morphologyEx(L, cv2.MORPH_TOPHAT, ker(k)) > g.get('thr', 40)) & (L > g.get('lmin', 150)))[y0 - Y0:y1 - Y0, x0 - X0:x1 - X0]
+            hat = cv2.morphologyEx(L, cv2.MORPH_TOPHAT, ker(k))
+            sel = (hat > g.get('thr', 40)) & (L > g.get('lmin', 150))
+            if g.get('lmin2'): sel |= (hat > g.get('thr2', 12)) & (L > g['lmin2'])       # near-white fill on bright ground
+            sel = sel[y0 - Y0:y1 - Y0, x0 - X0:x1 - X0]
             acc[i].append((sel, I[max(0, y0 - 60):min(H, y1 + 60), x0:x1].copy()))
     out = {}
     for i, g in enumerate(STILL):
-        g['mask'] = np.zeros((g['rect'][3] - g['rect'][1], g['rect'][2] - g['rect'][0]), np.uint8); g['shadow'] = None; g['core'] = 2.5
+        g['mask'] = np.zeros((g['rect'][3] - g['rect'][1], g['rect'][2] - g['rect'][0]), np.uint8); g['shadow'] = None; g['core'] = float(g.get('core0', 2.5))
         if acc[i]:
             n = np.array([int(sel.sum()) for sel, _ in acc[i]]); top = np.percentile(n, 90)
             good = [sel for (sel, _), c in zip(acc[i], n) if c >= 0.5 * top]       # frames where the letters stand out
             if good and top >= 200:
                 g['mask'] = ((np.mean(good, axis=0) >= 0.5) * 255).astype(np.uint8)
+                for hx0, hy0, hx1, hy1 in g.get('holes', []):                 # what the build keeps inside the rect
+                    g['mask'][max(0, hy0 - g['rect'][1]):max(0, hy1 - g['rect'][1]), max(0, hx0 - g['rect'][0]):max(0, hx1 - g['rect'][0])] = 0
                 # the shadow: fitted on the frames with the flattest surround, with this mask as the letters
                 y0 = g['rect'][1]; off = y0 - max(0, y0 - 60)
                 crops = [c for _, c in acc[i]][:: max(1, len(acc[i]) // 60)]
@@ -258,7 +265,7 @@ if '--check' in sys.argv:
             t = t_lo + j / 10; j += 1
             if still_on(g, t) and (sel(a) & m).sum() >= need:
                 left = int((sel(b) & m).sum())
-                if left >= 0.15 * m.sum(): bad.append((round(t, 2), left))
+                if left >= g.get('min_left', 0.15) * m.sum(): bad.append((round(t, 2), left))
         ps.kill(); pp.kill()
         if bad:
             hits[1000 + gi] = bad
