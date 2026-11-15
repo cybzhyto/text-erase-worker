@@ -18,6 +18,9 @@ Spec v1 (JSON, written by the caller):
                                               "cfg" next to "auto" = extra keys laid over the measured cfg
      "name": "file-stem",                     hosted file name, optional
      "check": 40,                             plate.py --check threshold, optional
+     "allowUncovered": true,                  optional: do not stop when caption blocks (or a block nobody could place)
+                                              have no erase zone (a hand check)
+     "allowResidue": true,                    optional: do not stop when old outlined caption letters are left on the plate
      "onDone": {field: value},                extra record fields to set after success (e.g. a status), optional
      "onFail": {field: value},                extra record fields to set after a failure, optional
      "gz": "…"}                               optional: base64 gzip of a JSON object merged into the spec (an inline spec
@@ -53,7 +56,7 @@ def http(method, url, body=None, headers=None, timeout=120, tries=4):
     """JSON request with retries on 429 / 5xx / network errors. Returns the parsed answer (or {} for an empty one)."""
     data = None if body is None else (body if isinstance(body, bytes) else json.dumps(body).encode())
     # Cloudflare in front of some APIs answers 403 «error code: 1010» to Python's default User-Agent
-    h = {'User-Agent': 'text-erase-worker/1 (+https://github.com/cybzhyto/text-erase-worker)', 'Accept': 'application/json'}
+    h = {'User-Agent': 'text-erase-worker/1', 'Accept': 'application/json'}
     if body is not None and not isinstance(body, bytes): h['Content-Type'] = 'application/json'
     h.update(headers or {})
     for k in range(tries):
@@ -165,6 +168,13 @@ def host(path, name):
     return up['file_url']
 
 
+def log_from(path, mark):
+    """The log's text from byte offset `mark` on. The log holds non-ASCII text (the new caption pages), so a character
+    offset into it is not a byte offset: read as characters, the check's first lines were cut off and its stops with them."""
+    with open(path, 'rb') as f:
+        f.seek(mark); return f.read().decode('utf-8', 'replace')
+
+
 def parse_check(text):
     """plate.py --check output -> {residue: [[zone, mode, t0, t1, frames, worst_t, worst_px]], offText: n}"""
     res = [[int(m[0]), m[1], float(m[2]), float(m[3]), int(m[4]), float(m[5]), int(m[6])] for m in
@@ -218,6 +228,19 @@ def main():
             meas = json.load(open(f'{W}/cfg.auto.json'))
             json.dump({**meas, **cfg}, open(f'{W}/cfg.json', 'w'))          # caller keys win (an explicit override)
             say(f'{len(meas.get("zones_extra", []))} zones, {len(meas.get("caption_rects", []))} caption rects measured')
+            # every caption block of the source must be under an erase for most of its time: a block the measure
+            # missed keeps its old words under the new ones, so the job stops here instead of delivering that
+            cc = (meas.get('auto') or {}).get('captions')
+            if cc:
+                say(f'captions: {cc.get("style")}, {cc.get("blocks")} blocks, {cc.get("uncovered")} not covered')
+                if cc.get('uncovered') and not spec.get('allowUncovered'):
+                    raise RuntimeError(f'captions not covered: {cc["uncovered"]} of {cc["blocks"]} caption blocks have no erase zone '
+                                       f'for at least half of their time (style: {cc.get("style")}); nothing was rendered')
+            # the same for any other translated block the measure could not place at all (no read, no box of its own)
+            un = (meas.get('auto') or {}).get('unplaced')
+            if un and not spec.get('allowUncovered'):
+                raise RuntimeError(f'{un} text block(s) could not be placed on the source (no read, no box): the old text '
+                                   f'would stay under the new one; nothing was rendered')
 
         step('split render body')
         run([sys.executable, f'{ENGINE}/build_math.py', f'{W}/rb.json', spec['src'], f'{W}/ov', f'{W}/cfg.json'])
@@ -235,10 +258,20 @@ def main():
         run([sys.executable, f'{ENGINE}/plate.py', f'{W}/ov.zones.json', src, f'{W}/plate.mp4'])
 
         step('check plate')
-        mark = LOG.tell()
+        LOG.flush(); mark = os.path.getsize(f'{W}/log.txt')
         run([sys.executable, f'{ENGINE}/plate.py', f'{W}/ov.zones.json', src, f'{W}/plate.mp4', '--check', str(spec.get('check', 40))])
-        LOG.flush(); chk = parse_check(open(f'{W}/log.txt').read()[mark:])
+        LOG.flush(); chk = parse_check(log_from(f'{W}/log.txt', mark))
         say(f'check: {len(chk["residue"])} zones with residue, blur off the text in {chk["offText"]} frames')
+        # outlined caption letters are found by their own shape, so one still found on the plate is an old word left:
+        # a hard stop (the top-hat zones' residue above stays a note: it also fires on textured ground)
+        left = [r for r in chk['residue'] if r[1] == 'cap']
+        if left and not spec.get('allowResidue'):
+            raise RuntimeError(f'old caption letters left on the plate in {sum(r[4] for r in left)} frames (first at {min(r[2] for r in left):.2f} s)')
+        # the same for a text erased with one mask for all of its time (the legal line): its letters still standing out
+        # of the plate on 3 or more of the sampled frames where they stood out of the source
+        left = [r for r in chk['residue'] if r[1] == 'still' and r[4] >= 3]
+        if left and not spec.get('allowResidue'):
+            raise RuntimeError(f'old letters of a line that stays through the video are left on the plate in {sum(r[4] for r in left)} sampled frames')
 
         if a.plate_only:
             step(f'done (plate only): {W}/plate.mp4'); return
