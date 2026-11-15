@@ -18,7 +18,8 @@ Spec v1 (JSON, written by the caller):
                                               "cfg" next to "auto" = extra keys laid over the measured cfg
      "name": "file-stem",                     hosted file name, optional
      "check": 40,                             plate.py --check threshold, optional
-     "allowUncovered": true,                  optional: do not stop when caption blocks have no erase zone (a hand check)
+     "allowUncovered": true,                  optional: do not stop when caption blocks (or a block nobody could place)
+                                              have no erase zone (a hand check)
      "allowResidue": true,                    optional: do not stop when old outlined caption letters are left on the plate
      "onDone": {field: value},                extra record fields to set after success (e.g. a status), optional
      "onFail": {field: value},                extra record fields to set after a failure, optional
@@ -228,6 +229,11 @@ def main():
                 if cc.get('uncovered') and not spec.get('allowUncovered'):
                     raise RuntimeError(f'captions not covered: {cc["uncovered"]} of {cc["blocks"]} caption blocks have no erase zone '
                                        f'for at least half of their time (style: {cc.get("style")}); nothing was rendered')
+            # the same for any other translated block the measure could not place at all (no read, no box of its own)
+            un = (meas.get('auto') or {}).get('unplaced')
+            if un and not spec.get('allowUncovered'):
+                raise RuntimeError(f'{un} text block(s) could not be placed on the source (no read, no box): the old text '
+                                   f'would stay under the new one; nothing was rendered')
 
         step('split render body')
         run([sys.executable, f'{ENGINE}/build_math.py', f'{W}/rb.json', spec['src'], f'{W}/ov', f'{W}/cfg.json'])

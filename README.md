@@ -34,6 +34,8 @@ A job that would leave old words on screen stops with an error instead of delive
 - **caption coverage**, right after «measure zones»: `cfg.auto.captions` holds, per caption block, the share of the
   frames that show caption letters and are under an erase. A block under one half = «captions not covered». A source
   whose spoken word sits on a coloured box is named and counts as uncovered (this engine does not erase that box).
+- **a block nobody could place**, right after «measure zones»: a translated block with no read, no covered band and
+  no box of its own (`cfg.auto.unplaced`) would keep its old text under the new one.
 - **letters left on the plate**, after «check plate»: an outlined caption line found on any plate frame, or the
   letters of a `still` text still standing out on 3 or more sampled frames.
 The top-hat zones' residue (`plate.py --check`) stays a note in the job record: it also fires on textured ground.
@@ -112,8 +114,18 @@ stills, shot changes, what the build covers) gets its cfg measured on the source
   smooth ground, its whole rect is filled.
 - **Moving text** (a bouncing pill, a sliding end-card line): the read box is followed by template matching at 4 fps
   (± 48 px) and the zone covers the union of its places.
-- **Kept blocks** (logo, UI, sticker; prices unless the build lifted the tag) clip the zones that would cover them,
-  and so do the source layers the build itself keeps («orig …»): a zone is cut back on the side that costs it least.
+- **An end-card line next to a kept block** (a tagline that comes up under the logo): the logo's own letters slide in
+  through the same space, so one zone over the whole path from the scene's first frame cut them. The line's settled
+  picture is followed back through the frames at 15 fps (`follow()`, ± 24 px across, ± 140 px up and down); a filled
+  rect travels with it from 0.3 s before it first shows until it has settled (over smooth ground; letter zones
+  otherwise), and the letter zone over its settled place starts only then. `cfg.auto.paths` records each path. A
+  line that cannot be followed gets its settled place from 0.3 s before the block's own start.
+- **Kept blocks** (logo, UI, sticker; prices unless the build lifted the tag) are never under a zone. One that lies
+  across the block (at least half of its width) cuts the zone back on the side that costs it least. One that only
+  meets a side or a corner (a price tag at the end of a headline's last line), and every source layer the build
+  itself keeps («orig …»), is cut out of the zone exactly (+ 6 px around a read): the rest of the line is erased.
+- **A block without a read** takes its own (rough) box from the analysis; with no box either it is counted in
+  `cfg.auto.unplaced` and the job stops.
 A `cfg` next to `auto` is laid over the measured cfg key by key (a hand override).
 
 ## Privacy (this repository is public)

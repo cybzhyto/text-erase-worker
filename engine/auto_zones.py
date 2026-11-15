@@ -26,10 +26,14 @@ What each role gets (roles the build keeps as source pixels get no zone):
                 Every way, cfg auto.captions says what share of each caption block's time is under an erase.
   disclaimer -> one zone per shot over the read box; light / dark from the pixels, threshold measured per shot
   price      -> kept, except a tag the build lifted to a free spot ("tag lifted …" layer): full erase of its old box
-  logo, ui, sticker -> kept, and other zones are clipped so they never cover them
+  logo, ui, sticker -> kept, and other zones never cover them: one that lies across a zone cuts it back, one at its
+                side or corner is cut out of it exactly (as the source layers the build keeps are)
   anything else (headline, cta, text …) -> one zone per shot over the union of its read boxes and their motion path
                 (+ a slide margin on end cards), mode / kernel / threshold / brightness gate measured on the source;
-                white letters partly over a light background get a second near-white zone
+                white letters partly over a light background get a second near-white zone. An end-card line that
+                comes in next to a kept block (a tagline under the logo) is followed frame by frame instead
+                (follow()): filled rects along its path, the letter zone once it has settled. A block without a
+                read takes its own box; without a box it is counted in auto.unplaced (the job stops)
 README › Automatic zones has the measures and why.
 Every zone of a static text gets static_share 0.3 (plate.py). The result goes through build_math.py as any cfg."""
 import json, subprocess, sys
@@ -45,17 +49,19 @@ TOPHAT_C = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (31, 31))   # caption le
 PLATE_Q = 0.98       # a line of pixels is still plate while this share of it is as dark as the plate
 
 
-def load_gray(src, fps, w, h, rows=None):
-    """Decode the source at `fps` as gray frames (optionally only rows [r0, r1)): list of (t, frame)."""
-    r0, r1 = rows or (0, h)
+def load_gray(src, fps, w, h, rows=None, span=None):
+    """Decode the source at `fps` as gray frames (optionally only rows [r0, r1), only the time span (start, length) s):
+    list of (t, frame)."""
+    r0, r1 = rows or (0, h); ss, dur = span or (0.0, None)
     vf = f'fps={fps},format=gray,crop={w}:{r1 - r0}:0:{r0}'      # format first: a yuv420 crop rounds an odd height down
-    p = subprocess.Popen(['ffmpeg', '-v', 'error', '-i', src, '-vf', vf, '-f', 'rawvideo', '-pix_fmt', 'gray', '-'],
+    cut = ['-ss', f'{ss:.3f}', '-t', f'{dur:.3f}'] if span else []
+    p = subprocess.Popen(['ffmpeg', '-v', 'error', *cut, '-i', src, '-vf', vf, '-f', 'rawvideo', '-pix_fmt', 'gray', '-'],
                          stdout=subprocess.PIPE)
     n = w * (r1 - r0); out = []; i = 0
     while True:
         b = p.stdout.read(n)
         if len(b) < n: break
-        out.append((i / fps, np.frombuffer(b, np.uint8).reshape(r1 - r0, w))); i += 1
+        out.append((ss + i / fps, np.frombuffer(b, np.uint8).reshape(r1 - r0, w))); i += 1
     p.wait()
     return out
 
@@ -343,54 +349,20 @@ def measure(frames, t0, t1, rect, k, polarity=None, holes=()):
     return z
 
 
-def grow_to_letters(frames, t0, t1, rect, m, line_px):
-    """rect widened over the letters that cross its edge. A block's box comes from a still read and is often a little
-    short (the last line of a four-line headline stuck out by 14 px and stayed). With the zone's own letter measure
-    (mode, kernel, threshold, gate), letters = connected pieces of the mask in the rect grown by 0.8 text lines (60 px
-    at most); a piece with at least 30 % of its pixels inside the rect belongs to the block, and the rect grows over
-    it. A piece that lies mostly outside (another text, a tag next to the block) is left alone."""
-    x0, y0, x1, y1 = rect; e = int(min(60, max(12, 0.8 * (line_px or 40)))); k = m['k']
-    sel = [L for t, L in frames if t0 <= t < t1]
-    if not sel: return rect
-    H, W = sel[0].shape
-    X0, Y0, X1, Y1 = max(0, x0 - e), max(0, y0 - e), min(W, x1 + e), min(H, y1 + e)
-    P0, Q0, P1, Q1 = max(0, X0 - k), max(0, Y0 - k), min(W, X1 + k), min(H, Y1 + k)
-    ker = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k)); u = list(rect)
-    for L in sel[:: max(1, len(sel) // 5)][:6]:
-        c = L[Q0:Q1, P0:P1]
-        if m['mode'] == 'dark': M = cv2.morphologyEx(c, cv2.MORPH_BLACKHAT, ker) > m['thr']
-        else: M = (cv2.morphologyEx(c, cv2.MORPH_TOPHAT, ker) > m['thr']) & (c > m.get('lmin', 150))
-        M = M[Y0 - Q0:Y1 - Q0, X0 - P0:X1 - P0].astype(np.uint8)
-        n, lab, st, _ = cv2.connectedComponentsWithStats(cv2.dilate(M, np.ones((5, 5), np.uint8)), connectivity=8)
-        inner = np.zeros(M.shape, bool); inner[y0 - Y0:y1 - Y0, x0 - X0:x1 - X0] = True
-        ins = np.bincount(lab[inner & (lab > 0)], minlength=n)
-        for i in range(1, n):
-            bx, by, bw, bh, a = (int(v) for v in st[i])
-            if a < 40 or ins[i] < 0.3 * a or bh > 3 * (line_px or 40) + 2 * e: continue
-            u = [min(u[0], X0 + bx), min(u[1], Y0 + by), max(u[2], X0 + bx + bw), max(u[3], Y0 + by + bh)]
-    return u
-
-
-def bright_edges(frames, t0, t1, rect, line_px):
-    """The parts of rect that lie next to bright ground: for the strip just below rect and the strip just above it (0.6
-    text lines tall), the column runs whose median luma is >= 200 in most sampled frames and that are at least 1.5 lines
-    wide give the 1.3 lines of rect next to them: [x0, y0, x1, y1]. The ground under the letters cannot be read through
-    them (the letters and their shadows fill the row), so the ground right beside the block stands in for it."""
-    x0, y0, x1, y1 = rect; sel = [L for t, L in frames if t0 <= t < t1]
-    if not sel or y1 - y0 < 8 or x1 - x0 < 8: return []
-    sel = sel[:: max(1, len(sel) // 6)][:8]; H = sel[0].shape[0]; h = int(max(8, 0.6 * line_px)); out = []
-    for below in (True, False):
-        a, b = (min(H, y1 + 4), min(H, y1 + 4 + h)) if below else (max(0, y0 - 4 - h), max(0, y0 - 4))
-        if b - a < 6: continue
-        on = np.mean([np.median(L[a:b, x0:x1], axis=0) >= 200 for L in sel], axis=0) >= 0.6; run = None
-        for i, v in enumerate(list(on) + [False]):
-            if v and run is None: run = i
-            if not v and run is not None:
-                if i - run >= 1.5 * line_px:
-                    cx0, cx1 = max(x0, x0 + run - int(0.5 * line_px)), min(x1, x0 + i + int(0.5 * line_px))
-                    out.append([cx0, max(y0, y1 - int(1.3 * line_px)), cx1, y1] if below else [cx0, y0, cx1, min(y1, y0 + int(1.3 * line_px))])
-                run = None
-    return out
+def follow(src, W, H, t_lo, t_hi, rect, tpl, reach=(24, 140), fps=15, lim=0.6):
+    """The path of a text line that slides into place. tpl = its settled picture (the pixels of rect in a frame that
+    shows it whole); it is searched in every frame of [t_lo, t_hi) within reach px (x, y) of rect. Returns
+    [(t, dx, dy)], in time order, for the unbroken run of frames that show it (match >= lim) up to t_hi; None when the
+    last frames do not show it (nothing settled to follow) or the picture is flat."""
+    x0, y0, x1, y1 = rect
+    if tpl.size == 0 or tpl.std() < 8 or t_hi - t_lo < 0.2: return None
+    a0, b0, a1, b1 = max(0, x0 - reach[0]), max(0, y0 - reach[1]), min(W, x1 + reach[0]), min(H, y1 + reach[1])
+    run = []
+    for t, L in reversed(load_gray(src, fps, W, H, (b0, b1), (t_lo, t_hi - t_lo))):
+        _, mx, _, loc = cv2.minMaxLoc(cv2.matchTemplate(np.ascontiguousarray(L[:, a0:a1]), tpl, cv2.TM_CCOEFF_NORMED))
+        if mx < lim: break
+        run.append((round(t, 3), a0 + loc[0] - x0, b0 + loc[1] - y0))
+    return run[::-1] if len(run) >= 3 else None
 
 
 def motion_union(frames, t0, t1, rect, t_ref=None, reach=48):
@@ -427,6 +399,26 @@ def smooth_around(frames, t0, t1, rect, m=14, lim=3.0):
         hp = c - cv2.GaussianBlur(c, (0, 0), 9)
         if k.sum() < 200 or float(hp[k].std()) > lim: return False
     return True
+
+
+def across(k, r):
+    """A kept box k that lies across rect r: it covers at least half of r's width."""
+    return min(r[2], k[2]) - max(r[0], k[0]) >= 0.5 * (r[2] - r[0])
+
+
+def cut_out(r, boxes):
+    """Rect r minus the boxes: the rects that are left (above, below, left and right of each box that meets r; a piece
+    under 8 px is dropped) and the boxes that met it."""
+    out = [list(r)]; cut = []
+    for k in boxes:
+        kx0, ky0, kx1, ky1 = k; nxt = []
+        for x0, y0, x1, y1 in out:
+            if kx1 <= x0 or kx0 >= x1 or ky1 <= y0 or ky0 >= y1: nxt.append([x0, y0, x1, y1]); continue
+            if k not in cut: cut.append(k)
+            nxt += [[x0, y0, x1, max(y0, ky0)], [x0, min(y1, ky1), x1, y1],
+                    [x0, max(y0, ky0), max(x0, kx0), min(y1, ky1)], [min(x1, kx1), max(y0, ky0), x1, min(y1, ky1)]]
+        out = [q for q in nxt if q[2] - q[0] >= 8 and q[3] - q[1] >= 8]
+    return out, cut
 
 
 def shots(t0, t1, cuts):
@@ -476,31 +468,26 @@ def main():
               [round(v * s_ / 100) for v, s_ in zip(orig_rect(e), (W, H, W, H))])
              for e in rb['elements'] if (e.get('name') or '').startswith('orig ') and e.get('type') == 'composition']
     def clip_keep(t0, t1, r):
-        """Shrink rect r (vertically) off every kept read that shows during [t0, t1). (The build's kept source layers
-        are cut out of the zone in add(): pieces().)"""
+        """Shrink rect r (vertically) off every kept read that shows during [t0, t1) and lies across it (a logo over a
+        tagline, a bar of an app screen). A kept read that only meets a side or a corner of r, and the build's kept
+        source layers, are cut out of the zone exactly in add(): pieces()."""
         x0, y0, x1, y1 = r
         for t, (kx0, ky0, kx1, ky1) in keep:
             if not (t0 - 0.3 <= t <= t1 + 0.3): continue
             if kx1 <= x0 or kx0 >= x1 or ky1 <= y0 or ky0 >= y1: continue
+            if not across((kx0, ky0, kx1, ky1), (x0, y0, x1, y1)): continue
             above, below = ky0 - y0, y1 - ky1              # room left above / below the kept box
             if above >= below: y1 = min(y1, ky0)
             else: y0 = max(y0, ky1)
         return [x0, y0, x1, y1] if y1 - y0 >= 8 else None
     def pieces(t0, t1, r):
-        """Rect r minus the source layers the build keeps during [t0, t1): the rects that are left (above, below, left
-        and right of each kept layer), and the kept rects that were cut out. A zone cut back on one side lost a whole
-        text line when a kept price tag touched only its corner (the line stayed in the old language)."""
-        out = [list(r)]; cut = []
-        for a0, a1, k in origs:
-            if a0 >= t1 - 0.05 or a1 <= t0 + 0.05: continue
-            kx0, ky0, kx1, ky1 = k; nxt = []
-            for x0, y0, x1, y1 in out:
-                if kx1 <= x0 or kx0 >= x1 or ky1 <= y0 or ky0 >= y1: nxt.append([x0, y0, x1, y1]); continue
-                if k not in cut: cut.append(k)
-                nxt += [[x0, y0, x1, max(y0, ky0)], [x0, min(y1, ky1), x1, y1],
-                        [x0, max(y0, ky0), max(x0, kx0), min(y1, ky1)], [min(x1, kx1), max(y0, ky0), x1, min(y1, ky1)]]
-            out = [q for q in nxt if q[2] - q[0] >= 8 and q[3] - q[1] >= 8]
-        return out, cut
+        """Rect r minus what is kept inside it during [t0, t1): the source layers the build keeps, and the kept reads
+        that meet only a side or a corner of r (+ 6 px: a read hugs its letters). Returns the rects that are left
+        (above, below, left and right of each kept box) and the kept boxes that were cut out. A zone cut back on one
+        whole side lost a text line when a kept price tag touched only its corner (the line stayed in the old language)."""
+        ks = [k for a0, a1, k in origs if a0 < t1 - 0.05 and a1 > t0 + 0.05]
+        ks += [[k[0] - 6, k[1] - 6, k[2] + 6, k[3] + 6] for t, k in keep if t0 - 0.3 <= t <= t1 + 0.3 and not across(k, r)]
+        return cut_out(r, ks)
     def polarity(gs):
         """'light' / 'dark' from the reads' letter colour vs the colour around them (None when they do not say)."""
         v = [(lum(x.get('color') or ''), lum(x.get('plate') or x.get('surround') or '')) for x in gs]
@@ -519,20 +506,6 @@ def main():
             m = measure(frames, t0, t1, r, kernel_for(line_px), pol, holes)      # one measure for the whole block
             if m is None: cfg['auto']['zones'].append({'role': role, 't': [round(t0, 2), round(t1, 2)], 'skip': 'no text'}); return
             ms = m if isinstance(m, list) else [m]
-            if line_px and ms[0]['mode'] in ('light', 'dark'):                    # the read's box is often a little short
-                g = grow_to_letters(frames, t0, t1, r, ms[0], line_px)
-                if g != list(r): r = g; rs, kept = pieces(t0, t1, r)
-            # light letters over a bright part of the picture (a headline's last line over white trousers) do not stand
-            # out at all: only their dark shadow shows, and it stayed as grey letters. The lines of the block that lie
-            # next to bright ground get a second zone that takes dark thin shapes (the shadow), grown the same way
-            if line_px and ms[0]['mode'] == 'light':
-                for rb_ in bright_edges(frames, t0, t1, r, line_px):
-                    md = measure(frames, t0, t1, rb_, kernel_for(line_px), 'dark', holes)
-                    if isinstance(md, dict) and md['thr'] >= 14:
-                        gb = grow_to_letters(frames, t0, t1, rb_, md, line_px)
-                        for q in pieces(t0, t1, gb)[0]:
-                            z = [round(t0, 3), round(t1 - t0, 3)] + [round(v * 100 / s_, 2) for v, s_ in zip(q, (W, H, W, H))] + ['dark', md['k'], md['thr'], md['grow'], 150]
-                            cfg['zones_extra'].append(z); cfg['auto']['zones'].append({'role': role + ' shadow', 'z': z})
         for q in rs:
             pct = [round(v * 100 / s, 2) for v, s in zip(q, (W, H, W, H))]
             for m in ms:
@@ -707,19 +680,59 @@ def main():
                 # show dark letters on a light page (an app screen, a cream intro) erases dark letters
                 add(t0, t1, clip_keep(t0, t1, r), role, 20, pol='legal'); continue
             if g:
-                r = union([px(x['box'], 12, 10) for x in g])
+                rt = union([px(x['box'], 12, 10) for x in g])          # where the reads saw it: its settled place
                 line = max((px(x['box'])[3] - px(x['box'])[1]) / max(1, int(x.get('lines') or 1)) for x in g)
-                r = motion_union(frames, t0, t1, r, g[0].get('t'))     # a bouncing pill: its whole path
+                r = motion_union(frames, t0, t1, rt, g[0].get('t'))    # a bouncing pill: its whole path
             else:
                 cv = [c for c in a.get('covered', []) if c.get('type', role) == role and c['start'] < t1 and c['end'] > t0 and c.get('band')]
-                if not cv: cfg['auto']['zones'].append({'role': role, 't': [t0, t1], 'skip': 'no read box'}); continue
-                c = cv[0]; xs = c.get('cols') or [0, 1000]
-                r = px({'ymin': c['band'][0], 'xmin': xs[0], 'ymax': c['band'][1], 'xmax': xs[1]})
-                line = (r[3] - r[1]) / 2
+                if cv:
+                    c = cv[0]; xs = c.get('cols') or [0, 1000]
+                    r = px({'ymin': c['band'][0], 'xmin': xs[0], 'ymax': c['band'][1], 'xmax': xs[1]})
+                    line = (r[3] - r[1]) / 2
+                elif o.get('box'):                                 # no read of it on any still: the block's own (rough) box
+                    r = px(o['box'], 16, 14)
+                    line = (px(o['box'])[3] - px(o['box'])[1]) / max(1, len(str(o.get('text') or '').split('\n')))
+                else:
+                    cfg['auto']['zones'].append({'role': role, 't': [t0, t1], 'skip': 'no read box'}); continue
             pack = scene_type(t0) == 'packshot'
             if pack:                                               # end-card text slides / fades in: cover its path
-                r = [r[0], max(0, r[1] - 60), r[2], min(H, r[3] + 60)]
-                t0 = min(t0, next((s['start'] for s in scenes if s['start'] <= t0 < s['end']), t0))
+                rp = [r[0], max(0, r[1] - 60), r[2], min(H, r[3] + 60)]
+                s0 = min(t0, next((s['start'] for s in scenes if s['start'] <= t0 < s['end']), t0))
+                if clip_keep(s0, t1, rp) == rp: r, t0 = rp, s0
+                else:
+                    # a kept block (the logo) stands in that path, and its own letters come in through it: a zone over
+                    # the whole path from the scene's first frame cut the logo's letters while they slid into place.
+                    # So the zone goes where the text is, when it is there: its settled picture is followed back
+                    # through the frames (follow()), a filled rect travels with it while it comes in, and the letter
+                    # zone starts once it has settled. A text that cannot be followed gets its settled place from just
+                    # before the block's own start, as on any other shot
+                    first = t0 <= float(o['start']) + 0.3      # the shot it comes in on (a later shot shows it settled)
+                    t0 = max(t0, min(float(o['start']) - 0.3, t1 - 0.1))
+                    if not g: rt = r                       # no read: the block's own box, at a time it has settled
+                    tr_ = float(g[0].get('t') or t0) if g else min(float(o['end']) - 0.3, float(o['start']) + 2.0)
+                    Lr = min(frames, key=lambda q: abs(q[0] - tr_))[1]
+                    path = first and follow(SRC, W, H, max(s0, float(o['start']) - 1.0), min(t1, float(o['start']) + 1.5), rt,
+                                            np.ascontiguousarray(Lr[rt[1]:rt[3], rt[0]:rt[2]]))
+                    if path:
+                        at = lambda p: [max(0, rt[0] + p[1] - 4), max(0, rt[1] + p[2] - 4), min(W, rt[2] + p[1] + 4), min(H, rt[3] + p[2] + 4)]
+                        k = max([i for i, p in enumerate(path) if abs(p[1]) > 2 or abs(p[2]) > 2], default=-1) + 1
+                        k = min(k, len(path) - 1); t_set = path[k][0]
+                        if k:
+                            # before the first frame that shows it, it was further out the way it came, and dim
+                            n_ = max(1, round(0.3 * (len(path) - 1) / max(0.05, path[-1][0] - path[0][0])))
+                            vx, vy = path[0][1] - path[1][1], path[0][2] - path[1][2]
+                            far = (path[0][0], path[0][1] + int(np.clip(vx * n_, -40, 40)), path[0][2] + int(np.clip(vy * n_, -80, 80)))
+                            steps = [(max(s0, path[0][0] - 0.3), path[0][0], union([at(far), at(path[0])]))]
+                            steps += [(path[i][0], path[i + 1][0], union([at(path[i]), at(path[i + 1])])) for i in range(k)]
+                            calm = [(t, L) for t, L in frames if t_set + 0.25 <= t < t_set + 1.3]
+                            flat = smooth_around(calm, 0, D + 1, union([q for _, _, q in steps]))
+                            for a_, b_, q in steps:
+                                if flat: add(a_, b_, q, role + ' entry', 0, full=True)
+                                else: add(a_, b_, q, role, line, pol=polarity(g))
+                        cfg['auto'].setdefault('paths', []).append({'role': role, 'from': path[0][0], 'settled': t_set, 'steps': k,
+                                                                    'start': [path[0][1], path[0][2]]})
+                        add(t_set, t1, clip_keep(t_set, t1, rt), role, line, pol=polarity(g))
+                        continue
             add(t0, t1, clip_keep(t0, t1, r), role, line, pol=polarity(g))
             # while an end-card line comes in (blurred, dim, growing) its letters are below every letter threshold and
             # showed under the new line for the first frames: over a smooth background the whole rect is filled for
@@ -730,6 +743,8 @@ def main():
                 # smooth = just before the line comes and once it has settled (while it comes its own blur is in the way)
                 calm = [(t, L) for t, L in frames if e0 - 0.6 <= t < e0 - 0.05 or e1 + 0.25 <= t < e1 + 0.9]
                 if smooth_around(calm, 0, D + 1, r): add(e0, e1, clip_keep(e0, e1, r), role + ' entry', 0, full=True)
+    # a translated block nobody could place (no read, no covered band, no box of its own) keeps its old text under the new
+    cfg['auto']['unplaced'] = sum(1 for z in cfg['auto']['zones'] if z.get('skip') == 'no read box')
     json.dump(cfg, open(OUT, 'w'), ensure_ascii=False, indent=1)
     print('auto zones:', len(cfg['zones_extra']), 'zones,', len(cfg.get('caption_rects', [])), 'caption rects,',
           'caption pages' if cfg.get('caption_pages') else 'no caption pages',
