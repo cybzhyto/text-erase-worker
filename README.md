@@ -31,8 +31,16 @@ GitHub Actions run (`.github/workflows/erase.yml`), started by the caller's auto
   longer, its reads agreeing, no move over 6 px) is erased the same way: a zone per shot took only the letters that
   stood out on that shot, grown a few px, so over a white wall half of the letters stayed and on every ground the
   letters' dark shadow stayed as a row of specks or as a readable grey word. Its mask also takes near-white fill
-  on bright ground (a second, low threshold), leaves out what the build keeps inside its rect, and counts as left
-  on the plate only when 40 % of it still stands out (a filled patch between darker things stands out a little).
+  on bright ground (a second, low threshold, and the lowest gate of its shots), and what the build keeps inside its
+  rect is put back as it was after the fill. The fill reaches 12 px (outline and shadow), so the pass for dark pixels
+  past it is off (it took picture lines: a frame bar, a pill's edge); the crop has 60 px of context on every side; the
+  R frames next to the block's times are erased too when half of its mask stands out there.
+  The block keeps zones per shot instead when: a read names a plate behind it, its reads disagree on any side, a kept
+  element shows on some of its shots only, its letters are dark on a shot, or its letters come or go inside its time
+  (on some frame the letters beyond the mask's reach are over 15 % of the mask: a line that comes in late, a word
+  that changes; `still_mask_ok()`). `cfg.auto.still_refused` says why. The check counts a block as left when 40 % of
+  its mask still stands out, when letters beyond the mask's reach (over a quarter of it) stand out of both the source
+  and the plate, or when its mask came out empty (every frame of its time).
 - **A translucent caption plate** (zone mode `exact`): the whole plate with its letters, on its page's own frames
   only (a `full` zone is also erased on the 2 frames before and after it).
 
