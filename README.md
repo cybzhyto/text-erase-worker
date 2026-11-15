@@ -29,8 +29,8 @@ GitHub Actions run (`.github/workflows/erase.yml`), started by the caller's auto
   cup's rim reach further and stay. On textured ground (knit, foliage) the filled letters still show as a soft patch:
   the fill uses only the pixels around them, and mirrored detail, a matched copy of the ground nearby and a fill from
   neighbour frames along the optical flow all looked worse on a known patch (2026-11-15). So the patch's edge is
-  feathered (`captions.FEATHER`, 14 px): the ground next to the hole fades into a blurred copy, so the patch is a
-  little wider but diffuse instead of letter-shaped; past 14 px nothing changes, and dark page words next to the
+  feathered (`captions.FEATHER`, 18 px): the ground next to the hole fades into a blurred copy, so the patch is a
+  little wider but diffuse instead of letter-shaped; past 18 px nothing changes, and dark page words next to the
   letters stay sharp. Outlined caption lines only: a still headline keeps the plain edge next to kept page elements.
 - **A text that stays through many shots** (the legal line, `still` in ZONES.json): its letters are found once, on the
   shots where they stand out, and that one mask erases the line in every frame of its time. On a white page such a

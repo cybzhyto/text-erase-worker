@@ -174,9 +174,9 @@ def erase(bgr, cap_h, colors=(), shadow=None, core=7.0, grow=0):
 
 # Feathered edge of a filled caption line: (R px, blur sigma). The fill is smooth and the ground around it often textured
 # (knit, foliage), so a sharp edge drew the letters' outline as a soft patch. The ground next to the hole fades into a
-# blurred copy over R px: a slightly wider but diffuse patch. 14 / 3.5 chosen on a knit ground; 22 px blurred the
-# picture above the line, 8 px still showed the letters' shape.
-FEATHER = (14, 3.5)
+# blurred copy over R px: a slightly wider but diffuse patch. On a knit ground 8 px still showed the letters' shape,
+# 14 px was liked and a little more was asked for (18 px), 22 px blurred the picture above the line.
+FEATHER = (18, 4.0)
 
 
 def erase_mask(bgr, mask, shadow=None, core=7.0, grow=0, spur=True, feather=(0, 0)):
