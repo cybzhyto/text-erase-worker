@@ -343,6 +343,56 @@ def measure(frames, t0, t1, rect, k, polarity=None, holes=()):
     return z
 
 
+def grow_to_letters(frames, t0, t1, rect, m, line_px):
+    """rect widened over the letters that cross its edge. A block's box comes from a still read and is often a little
+    short (the last line of a four-line headline stuck out by 14 px and stayed). With the zone's own letter measure
+    (mode, kernel, threshold, gate), letters = connected pieces of the mask in the rect grown by 0.8 text lines (60 px
+    at most); a piece with at least 30 % of its pixels inside the rect belongs to the block, and the rect grows over
+    it. A piece that lies mostly outside (another text, a tag next to the block) is left alone."""
+    x0, y0, x1, y1 = rect; e = int(min(60, max(12, 0.8 * (line_px or 40)))); k = m['k']
+    sel = [L for t, L in frames if t0 <= t < t1]
+    if not sel: return rect
+    H, W = sel[0].shape
+    X0, Y0, X1, Y1 = max(0, x0 - e), max(0, y0 - e), min(W, x1 + e), min(H, y1 + e)
+    P0, Q0, P1, Q1 = max(0, X0 - k), max(0, Y0 - k), min(W, X1 + k), min(H, Y1 + k)
+    ker = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k)); u = list(rect)
+    for L in sel[:: max(1, len(sel) // 5)][:6]:
+        c = L[Q0:Q1, P0:P1]
+        if m['mode'] == 'dark': M = cv2.morphologyEx(c, cv2.MORPH_BLACKHAT, ker) > m['thr']
+        else: M = (cv2.morphologyEx(c, cv2.MORPH_TOPHAT, ker) > m['thr']) & (c > m.get('lmin', 150))
+        M = M[Y0 - Q0:Y1 - Q0, X0 - P0:X1 - P0].astype(np.uint8)
+        n, lab, st, _ = cv2.connectedComponentsWithStats(cv2.dilate(M, np.ones((5, 5), np.uint8)), connectivity=8)
+        inner = np.zeros(M.shape, bool); inner[y0 - Y0:y1 - Y0, x0 - X0:x1 - X0] = True
+        ins = np.bincount(lab[inner & (lab > 0)], minlength=n)
+        for i in range(1, n):
+            bx, by, bw, bh, a = (int(v) for v in st[i])
+            if a < 40 or ins[i] < 0.3 * a or bh > 3 * (line_px or 40) + 2 * e: continue
+            u = [min(u[0], X0 + bx), min(u[1], Y0 + by), max(u[2], X0 + bx + bw), max(u[3], Y0 + by + bh)]
+    return u
+
+
+def bright_edges(frames, t0, t1, rect, line_px):
+    """The parts of rect that lie next to bright ground: for the strip just below rect and the strip just above it (0.6
+    text lines tall), the column runs whose median luma is >= 200 in most sampled frames and that are at least 1.5 lines
+    wide give the 1.3 lines of rect next to them: [x0, y0, x1, y1]. The ground under the letters cannot be read through
+    them (the letters and their shadows fill the row), so the ground right beside the block stands in for it."""
+    x0, y0, x1, y1 = rect; sel = [L for t, L in frames if t0 <= t < t1]
+    if not sel or y1 - y0 < 8 or x1 - x0 < 8: return []
+    sel = sel[:: max(1, len(sel) // 6)][:8]; H = sel[0].shape[0]; h = int(max(8, 0.6 * line_px)); out = []
+    for below in (True, False):
+        a, b = (min(H, y1 + 4), min(H, y1 + 4 + h)) if below else (max(0, y0 - 4 - h), max(0, y0 - 4))
+        if b - a < 6: continue
+        on = np.mean([np.median(L[a:b, x0:x1], axis=0) >= 200 for L in sel], axis=0) >= 0.6; run = None
+        for i, v in enumerate(list(on) + [False]):
+            if v and run is None: run = i
+            if not v and run is not None:
+                if i - run >= 1.5 * line_px:
+                    cx0, cx1 = max(x0, x0 + run - int(0.5 * line_px)), min(x1, x0 + i + int(0.5 * line_px))
+                    out.append([cx0, max(y0, y1 - int(1.3 * line_px)), cx1, y1] if below else [cx0, y0, cx1, min(y1, y0 + int(1.3 * line_px))])
+                run = None
+    return out
+
+
 def motion_union(frames, t0, t1, rect, t_ref=None, reach=48):
     """A text that moves inside its window (a CTA pill that bounces 22 px) leaves the read box in half the frames: follow the
     box's content by template matching at the sampled frames (+- reach px) and return the union of the places it was."""
@@ -426,8 +476,8 @@ def main():
               [round(v * s_ / 100) for v, s_ in zip(orig_rect(e), (W, H, W, H))])
              for e in rb['elements'] if (e.get('name') or '').startswith('orig ') and e.get('type') == 'composition']
     def clip_keep(t0, t1, r):
-        """Shrink rect r off every kept box that shows during [t0, t1): vertically off a kept read, and off a kept
-        source layer of the build on the side that costs the zone least."""
+        """Shrink rect r (vertically) off every kept read that shows during [t0, t1). (The build's kept source layers
+        are cut out of the zone in add(): pieces().)"""
         x0, y0, x1, y1 = r
         for t, (kx0, ky0, kx1, ky1) in keep:
             if not (t0 - 0.3 <= t <= t1 + 0.3): continue
@@ -435,12 +485,22 @@ def main():
             above, below = ky0 - y0, y1 - ky1              # room left above / below the kept box
             if above >= below: y1 = min(y1, ky0)
             else: y0 = max(y0, ky1)
-        for a0, a1, (kx0, ky0, kx1, ky1) in origs:
+        return [x0, y0, x1, y1] if y1 - y0 >= 8 else None
+    def pieces(t0, t1, r):
+        """Rect r minus the source layers the build keeps during [t0, t1): the rects that are left (above, below, left
+        and right of each kept layer), and the kept rects that were cut out. A zone cut back on one side lost a whole
+        text line when a kept price tag touched only its corner (the line stayed in the old language)."""
+        out = [list(r)]; cut = []
+        for a0, a1, k in origs:
             if a0 >= t1 - 0.05 or a1 <= t0 + 0.05: continue
-            if kx1 <= x0 or kx0 >= x1 or ky1 <= y0 or ky0 >= y1: continue
-            cuts_ = [[x0, y0, x1, ky0], [x0, ky1, x1, y1], [x0, y0, kx0, y1], [kx1, y0, x1, y1]]
-            x0, y0, x1, y1 = max(cuts_, key=lambda c: max(0, c[2] - c[0]) * max(0, c[3] - c[1]))
-        return [x0, y0, x1, y1] if y1 - y0 >= 8 and x1 - x0 >= 8 else None
+            kx0, ky0, kx1, ky1 = k; nxt = []
+            for x0, y0, x1, y1 in out:
+                if kx1 <= x0 or kx0 >= x1 or ky1 <= y0 or ky0 >= y1: nxt.append([x0, y0, x1, y1]); continue
+                if k not in cut: cut.append(k)
+                nxt += [[x0, y0, x1, max(y0, ky0)], [x0, min(y1, ky1), x1, y1],
+                        [x0, max(y0, ky0), max(x0, kx0), min(y1, ky1)], [min(x1, kx1), max(y0, ky0), x1, min(y1, ky1)]]
+            out = [q for q in nxt if q[2] - q[0] >= 8 and q[3] - q[1] >= 8]
+        return out, cut
     def polarity(gs):
         """'light' / 'dark' from the reads' letter colour vs the colour around them (None when they do not say)."""
         v = [(lum(x.get('color') or ''), lum(x.get('plate') or x.get('surround') or '')) for x in gs]
@@ -450,17 +510,34 @@ def main():
     fulls = []                                                   # full zones so far: (t0, t1, px rect)
     def add(t0, t1, r, role, line_px, full=False, pol=None):
         if t1 - t0 < 0.02 or r is None: return
-        pct = [round(v * 100 / s, 2) for v, s in zip(r, (W, H, W, H))]
+        rs, kept = pieces(t0, t1, r)                 # the block's rect without the build's kept source layers
+        if not rs: cfg['auto']['zones'].append({'role': role, 't': [round(t0, 2), round(t1, 2)], 'skip': 'under a kept layer'}); return
         if full:
             fulls.append((t0, t1, r)); ms = [None]
         else:
-            holes = [h for a0, a1, h in fulls if a0 < t1 and a1 > t0]
-            m = measure(frames, t0, t1, r, kernel_for(line_px), pol, holes)
+            holes = [h for a0, a1, h in fulls if a0 < t1 and a1 > t0] + kept
+            m = measure(frames, t0, t1, r, kernel_for(line_px), pol, holes)      # one measure for the whole block
             if m is None: cfg['auto']['zones'].append({'role': role, 't': [round(t0, 2), round(t1, 2)], 'skip': 'no text'}); return
             ms = m if isinstance(m, list) else [m]
-        for m in ms:
-            z = [round(t0, 3), round(t1 - t0, 3)] + pct + (['full', 0, 0, 3] if m is None else [m['mode'], m['k'], m['thr'], m['grow'], m['lmin']])
-            cfg['zones_extra'].append(z); cfg['auto']['zones'].append({'role': role, 'z': z})
+            if line_px and ms[0]['mode'] in ('light', 'dark'):                    # the read's box is often a little short
+                g = grow_to_letters(frames, t0, t1, r, ms[0], line_px)
+                if g != list(r): r = g; rs, kept = pieces(t0, t1, r)
+            # light letters over a bright part of the picture (a headline's last line over white trousers) do not stand
+            # out at all: only their dark shadow shows, and it stayed as grey letters. The lines of the block that lie
+            # next to bright ground get a second zone that takes dark thin shapes (the shadow), grown the same way
+            if line_px and ms[0]['mode'] == 'light':
+                for rb_ in bright_edges(frames, t0, t1, r, line_px):
+                    md = measure(frames, t0, t1, rb_, kernel_for(line_px), 'dark', holes)
+                    if isinstance(md, dict) and md['thr'] >= 14:
+                        gb = grow_to_letters(frames, t0, t1, rb_, md, line_px)
+                        for q in pieces(t0, t1, gb)[0]:
+                            z = [round(t0, 3), round(t1 - t0, 3)] + [round(v * 100 / s_, 2) for v, s_ in zip(q, (W, H, W, H))] + ['dark', md['k'], md['thr'], md['grow'], 150]
+                            cfg['zones_extra'].append(z); cfg['auto']['zones'].append({'role': role + ' shadow', 'z': z})
+        for q in rs:
+            pct = [round(v * 100 / s, 2) for v, s in zip(q, (W, H, W, H))]
+            for m in ms:
+                z = [round(t0, 3), round(t1 - t0, 3)] + pct + (['full', 0, 0, 3] if m is None else [m['mode'], m['k'], m['thr'], m['grow'], m['lmin']])
+                cfg['zones_extra'].append(z); cfg['auto']['zones'].append({'role': role, 'z': z})
 
     # 1) captions: measured frame by frame inside the caption rows
     subs = [o for o in a.get('overlays', []) if o.get('role') in CAPTION]
