@@ -32,6 +32,11 @@ GitHub Actions run (`.github/workflows/erase.yml`), started by the caller's auto
   feathered (`captions.FEATHER`, 18 px): the ground next to the hole fades into a blurred copy, so the patch is a
   little wider but diffuse instead of letter-shaped; past 18 px nothing changes, and dark page words next to the
   letters stay sharp. Outlined caption lines only: a still headline keeps the plain edge next to kept page elements.
+  The patch also changes over time without a jump: when a line's text leaves (a shorter next line, a pause) its
+  patch stays and fades out over 20 frames (0.67 s), and the patch of a coming line fades in over 20 frames before its
+  text shows (`captions.FADE`; `plate.py` reads the letters and hole of every caption frame first, then fills each
+  frame with the holes of the frames around it, never across a cut). Filled frame by frame, the patch jumped in size
+  whenever the old caption changed length.
 - **A text that stays through many shots** (the legal line, `still` in ZONES.json): its letters are found once, on the
   shots where they stand out, and that one mask erases the line in every frame of its time. On a white page such a
   line is only its grey shadow, and a zone measured on that shot alone found dark specks or nothing.
