@@ -178,15 +178,49 @@ def erase(bgr, cap_h, colors=(), shadow=None, core=7.0, grow=0):
 # 14 px was liked and a little more was asked for (18 px), 22 px blurred the picture above the line.
 FEATHER = (18, 4.0)
 
+# Timing of a filled caption patch, in frames (30 fps): when a line's text leaves (a shorter next line, a pause) its patch
+# stays and fades out over FADE[0] frames, and the patch of a coming line fades in over FADE[1] frames before its text
+# shows. Filled from frame to frame only, the patch jumped in size whenever the old caption changed length (seen on a knit
+# ground); 0.67 s each way was picked over 0.4 s out and 0.33 s in. plate.py never carries a patch across a cut.
+FADE = (20, 20)
 
-def erase_mask(bgr, mask, shadow=None, core=7.0, grow=0, spur=True, feather=(0, 0)):
+
+def fade_strength(hole, past=(), future=(), out=FADE[0], into=FADE[1]):
+    """How much of each pixel of a caption crop is patch at this frame, 0..1 (float32): 1 on this frame's hole, and
+    1 - k / (n + 1) on the hole of the frame k steps before (n = out) or after (n = into). past / future: the holes of the
+    frames before / after this one, nearest first, None for a frame without a caption; the caller ends them at a cut."""
+    h = hole.astype(np.float32)
+    for seq, n in ((past, out), (future, into)):
+        for k, E in enumerate(list(seq)[:n], 1):
+            if E is not None: h = np.maximum(h, E.astype(np.float32) * np.float32(1 - k / (n + 1)))
+    return h
+
+
+def fade_erase(bgr, mask, hole, h, shadow=None, core=7.0, grow=0):
+    """The crop with this frame's letters erased (as erase does) and the fading patches of the lines before and after it
+    (h = fade_strength): erased * (1 - a) + fill of (this hole + every held hole) * a, where a is the held strength spread
+    over a patch's reach (outline + feather) and smoothed. -> (crop, True when anything was filled)."""
+    c = erase_mask(bgr, mask, shadow, core, grow, feather=FEATHER) if mask.any() else bgr
+    g = np.where(hole, 0, h)
+    if g.max() <= 0: return c, bool(mask.any())
+    u = erase_mask(bgr, mask, shadow, core, grow, feather=FEATHER, extra=h > 0)
+    r = int(core + grow + FEATHER[0] + 4)
+    a = np.clip(cv2.GaussianBlur(cv2.dilate(g, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * r + 1, 2 * r + 1))), (0, 0), 6), 0, 1)
+    a = (a * a * (3 - 2 * a))[..., None]
+    return np.clip(c.astype(np.float32) * (1 - a) + u.astype(np.float32) * a + 0.5, 0, 255).astype(np.uint8), True
+
+
+def erase_mask(bgr, mask, shadow=None, core=7.0, grow=0, spur=True, feather=(0, 0), extra=None, hole_only=False):
     """Erase the letters of `mask` (uint8, the letters' fill) from a BGR crop: shadow divided out, letters filled.
     spur=False: no pass for dark pixels past the fill (a fill that already reaches 12 px holds outline and shadow, and
     that pass then takes dark lines of the picture next to the letters: a frame bar, a pill's edge).
     feather=(R, sigma): the ground within R px of the hole blends into a blurred copy, fully at the hole's edge (FEATHER;
-    outlined caption lines only: a still headline sits next to kept page elements a blur would soften)."""
-    if not mask.any(): return bgr
-    d = cv2.distanceTransform((mask == 0).astype(np.uint8), cv2.DIST_L2, 5)
+    outlined caption lines only: a still headline sits next to kept page elements a blur would soften).
+    extra (bool, optional): more hole to fill, the held patch of the lines before and after this frame (fade_erase);
+    the shadow is divided out around `mask` only. hole_only=True: return this frame's hole (bool) instead of the crop."""
+    if not mask.any() and (extra is None or not extra.any()):
+        return np.zeros(mask.shape, bool) if hole_only else bgr
+    d = cv2.distanceTransform((mask == 0).astype(np.uint8), cv2.DIST_L2, 5) if mask.any() else np.full(mask.shape, 1e4, np.float32)
     I = bgr.astype(np.float32)
     E = d <= core + grow
     if shadow:
@@ -207,10 +241,15 @@ def erase_mask(bgr, mask, shadow=None, core=7.0, grow=0, spur=True, feather=(0, 
         far = np.unique(lb[sp & (d > core + grow + 9)])
         sp = np.isin(lb, np.setdiff1d(touch, far))
         if sp.any(): E |= cv2.dilate(sp.astype(np.uint8), K3) > 0
+    if hole_only: return E
+    near = d <= core + grow + 30
+    if extra is not None:
+        E = E | extra
+        near = cv2.distanceTransform((~E).astype(np.uint8), cv2.DIST_L2, 5) <= 30
     # the fill takes the ground, not the dark things next to the letters that stay (an app page's own words): with them
     # a hole on a white page filled grey. A pixel much darker than the ground around the letters counts 1/20
     Wt = 1 - E.astype(np.float32)
-    if spur: Wt[(~E) & (d <= core + grow + 30) & (Lg < 0.62 * bgl - 6)] *= 0.05
+    if spur: Wt[(~E) & near & (Lg < 0.62 * bgl - 6)] *= 0.05
     E = E.astype(np.float32)
     F = pushpull(I, Wt)
     Mf = np.clip(cv2.GaussianBlur(E, (0, 0), 1.5) * 1.6, 0, 1)[..., None]

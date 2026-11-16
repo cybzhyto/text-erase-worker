@@ -181,6 +181,47 @@ class Erase(unittest.TestCase):
         kept = (out.max(2) < 140)[words].mean()
         self.assertGreater(float(kept), 0.9)
 
+class Fade(unittest.TestCase):
+    def test_a_patch_fades_out_after_its_line_and_in_before_the_next_and_never_past_a_cut(self):
+        A = np.zeros((4, 10), bool); A[:, :8] = True                # a long line
+        B = np.zeros((4, 10), bool); B[:, :3] = True                # the short line after it
+        o, i = captions.FADE
+        h = captions.fade_strength(B, past=[B] * 4 + [A] * 30)       # 5 frames after the long line left
+        self.assertTrue(np.all(h[B] == 1))
+        self.assertAlmostEqual(float(h[0, 5]), 1 - 5 / (o + 1), places=5)
+        self.assertTrue(np.all(captions.fade_strength(B, past=[B] * o + [A] * 30)[~B] == 0))   # faded out
+        self.assertTrue(np.all(captions.fade_strength(B, past=[B] * 2)[~B] == 0))              # the caller stopped at a cut
+        h = captions.fade_strength(B, future=[None] * 3 + [A] * 10)  # the long line shows in 4 frames
+        self.assertAlmostEqual(float(h[0, 5]), 1 - 4 / (i + 1), places=5)
+        near = captions.fade_strength(B, future=[A]); far_ = captions.fade_strength(B, future=[None] * (i - 1) + [A])
+        self.assertGreater(float(near[0, 5]), float(far_[0, 5])); self.assertGreater(float(far_[0, 5]), 0)
+
+    def test_the_patch_of_a_line_that_left_is_held_and_fades_and_ground_far_away_is_untouched(self):
+        yy, xx = np.mgrid[0:H, 0:W].astype(np.float32)               # knit-like ground, as in the feather test
+        knit = 128 + 45 * np.sin(xx * 1.1) * np.sin(yy * 0.9) + 20 * np.sin(xx * 0.23 + yy * 0.31)
+        bg = np.clip(np.dstack([knit * 0.8, knit * 0.9, knit]), 0, 255).astype(np.uint8)
+        long_, _ = draw(bg, 'BRING A WARM HAT', shadow=None); short, _ = draw(bg, 'HAT', shadow=None)
+        mA = captions.find(long_, 0)['mask']; mB = captions.find(short, 0)['mask']
+        EA = captions.erase_mask(long_, mA, None, 7.0, 0, hole_only=True)
+        EB = captions.erase_mask(short, mB, None, 7.0, 0, hole_only=True)
+        def sd(im):
+            L = cv2.cvtColor(im, cv2.COLOR_BGR2GRAY).astype(np.float32); mu = cv2.blur(L, (7, 7))
+            return np.sqrt(np.maximum(cv2.blur(L * L, (7, 7)) - mu * mu, 0))
+        plain = captions.erase_mask(short, mB, None, 7.0, 0, feather=captions.FEATHER)
+        same, n = captions.fade_erase(short, mB, EB, captions.fade_strength(EB), None, 7.0, 0)
+        self.assertTrue(n); self.assertTrue(np.array_equal(same, plain))           # no line around: as filled on its own
+        only = EA & (cv2.distanceTransform((~EB).astype(np.uint8), cv2.DIST_L2, 5) > 60)   # under the long line only
+        self.assertGreater(int(only.sum()), 2000)
+        held, _ = captions.fade_erase(short, mB, EB, captions.fade_strength(EB, past=[EA]), None, 7.0, 0)
+        late, _ = captions.fade_erase(short, mB, EB, captions.fade_strength(EB, past=[None] * 18 + [EA]), None, 7.0, 0)
+        ground_sd = float(sd(short)[only].mean())
+        self.assertLess(float(sd(held)[only].mean()), 0.5 * ground_sd)            # 1 frame after: still a smooth patch
+        self.assertGreater(float(sd(late)[only].mean()), 0.8 * ground_sd)         # 19 frames after: nearly the ground
+        dU = cv2.distanceTransform((~(EA | EB)).astype(np.uint8), cv2.DIST_L2, 5)
+        far = dU > 7 + captions.FEATHER[0] + 60
+        self.assertTrue(np.array_equal(held[far], short[far]))                    # far from both lines: bit-exact
+
+
 class Shadow(unittest.TestCase):
     def test_the_fit_finds_the_drawn_shadow_and_none_where_there_is_none(self):
         frames = [draw(ground('white'), t)[0] for t in ('EACH LITTLE BOX', 'MADE FOR NOW', '12-PART TEST')]

@@ -29,19 +29,62 @@ J = json.load(open(Zf)); W, H, FPS = J['w'], J['h'], J['fps']; Z = J['zones']
 CAP = J.get('cap') or {}                      # outlined captions (mode cap): {colors, core, shadow, grow}
 CAPZ = [i for i, z in enumerate(Z) if z[6] == 'cap']
 def cap_rect(z): return max(0, z[2]), max(0, z[3]), min(W, z[4]), min(H, z[5])
+CAPF = {}            # caption prepass: (zone, frame) -> (crop shape, packed letters, packed hole); CUTF = frames that start a shot
+CUTF = set()
+def cap_prepass():
+    """Letters and hole of every caption frame, read before the plate: a patch fades out after its text and in before
+    it (captions.FADE), so a frame needs the holes of the frames around it. Reads FADE frames past each end of a chunk."""
+    if not CAPZ: return
+    out, into = captions.FADE; prev = None
+    for j, I in frames(max(0, F0 - out), FN + out + into):
+        th = thumb(I)
+        if prev is not None and float(np.abs(th - prev).mean()) > CUT: CUTF.add(j)
+        prev = th; t = j / FPS
+        for i in CAPZ:
+            z = Z[i]
+            if not on(z, t): continue
+            x0, y0, x1, y1 = cap_rect(z)
+            if x1 <= x0 or y1 <= y0: continue
+            crop = I[y0:y1, x0:x1]
+            r = captions.find(crop, z[7], CAP.get('colors') or ())
+            if not r['lines']: continue
+            E = captions.erase_mask(crop, r['mask'], CAP.get('shadow'), CAP.get('core', 7.0), CAP.get('grow', 0), hole_only=True)
+            CAPF[(i, j)] = (E.shape, np.packbits(r['mask'] > 0), np.packbits(E))
+    print('caption prepass:', len(CAPF), 'caption frames,', len(CUTF), 'cuts', flush=True)
+def cap_get(i, j, part):
+    if (i, j) not in CAPF: return None
+    sh, m, E = CAPF[(i, j)]
+    return np.unpackbits(m if part == 'letters' else E)[:sh[0] * sh[1]].reshape(sh).astype(bool)
 def cap_erase(I, t):
-    """The frame with its outlined caption letters erased (mode cap zones on at t); the frame itself when there are none."""
-    O = I
+    """The frame with its outlined caption letters erased (mode cap zones on at t); the frame itself when there are none.
+    After cap_prepass the patches of the lines before and after it fade (captions.fade_erase), never across a cut;
+    without it (--at previews) each frame is filled on its own."""
+    O = I; j = round(t * FPS)
     for i in CAPZ:
         z = Z[i]
         if not on(z, t): continue
         x0, y0, x1, y1 = cap_rect(z)
         if x1 <= x0 or y1 <= y0: continue
-        c, n = captions.erase(I[y0:y1, x0:x1], z[7], CAP.get('colors') or (), CAP.get('shadow'), CAP.get('core', 7.0), CAP.get('grow', 0))
+        crop = I[y0:y1, x0:x1]; sh_ = CAP.get('shadow'), CAP.get('core', 7.0), CAP.get('grow', 0)
+        if not PREPASSED:
+            c, n = captions.erase(crop, z[7], CAP.get('colors') or (), *sh_)
+        else:
+            m = cap_get(i, j, 'letters'); E = cap_get(i, j, 'hole')
+            if m is None: m = np.zeros(crop.shape[:2], bool); E = m
+            past, future = [], []
+            for k in range(1, captions.FADE[0] + 1):              # the frames before, back to this shot's first frame
+                if j - k + 1 in CUTF: break
+                past.append(cap_get(i, j - k, 'hole'))
+            for k in range(1, captions.FADE[1] + 1):              # the frames after, up to the next cut
+                if j + k in CUTF: break
+                future.append(cap_get(i, j + k, 'hole'))
+            h = captions.fade_strength(E, past, future)
+            c, n = captions.fade_erase(crop, m.astype(np.uint8) * 255, E, h, *sh_)
         if n:
             if O is I: O = I.copy()
             O[y0:y1, x0:x1] = c
     return O
+PREPASSED = False
 def on(z, t):   # zone z covers the frame at time t; by frame number, as the renderer shows an element: zone times are rounded
     return round(z[0] * FPS) <= round(t * FPS) < round(z[1] * FPS)   # (0.067 > 2/30: a plain time test skipped every 3rd frame of a tracked zone)
 R = 2           # the per-frame mask is unioned over +-R frames of the same shot
@@ -235,10 +278,11 @@ def clean(I, M):
     return O
 F0 = int(sys.argv[sys.argv.index('--from') + 1]) if '--from' in sys.argv else 0       # chunking: 4 cores = 4 processes
 FN = int(sys.argv[sys.argv.index('--count') + 1]) if '--count' in sys.argv else 10 ** 9
-def frames():
-    p = subprocess.Popen(['ffmpeg', '-v', 'error', '-ss', f'{F0 / FPS:.6f}', '-i', SRC, '-frames:v', str(FN), '-f', 'rawvideo',
+def frames(f0=None, fn=None):
+    f0 = F0 if f0 is None else f0; fn = FN if fn is None else fn
+    p = subprocess.Popen(['ffmpeg', '-v', 'error', '-ss', f'{f0 / FPS:.6f}', '-i', SRC, '-frames:v', str(fn), '-f', 'rawvideo',
                           '-pix_fmt', 'bgr24', '-'], stdout=subprocess.PIPE)
-    n = W * H * 3; i = F0
+    n = W * H * 3; i = f0
     while True:
         b = p.stdout.read(n)
         if len(b) < n: break
@@ -368,6 +412,7 @@ if '--at' in sys.argv:
         cv2.imwrite(f'{OUT}/plate_{t}.png', O)
         cv2.imwrite(f'{OUT}/cmp_{t}.jpg', np.hstack([sm(I), sm(O), sm(Mv)]), [cv2.IMWRITE_JPEG_QUALITY, 82])
     sys.exit()
+cap_prepass(); PREPASSED = True     # the caption patches fade in and out (captions.FADE): holes of all frames first
 # full video: temporal union of the masks over +-R frames (text is static per page; kills threshold flicker at letter rims)
 enc = subprocess.Popen(['ffmpeg', '-v', 'error', '-y', '-f', 'rawvideo', '-pix_fmt', 'bgr24', '-s', f'{W}x{H}', '-r', str(FPS), '-i', '-',
                         '-c:v', 'libx264', '-preset', 'fast', '-crf', '12', '-pix_fmt', 'yuv420p', OUT], stdin=subprocess.PIPE)
