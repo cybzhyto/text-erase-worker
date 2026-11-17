@@ -20,7 +20,9 @@ Spec v1 (JSON, written by the caller):
      "check": 40,                             plate.py --check threshold, optional
      "allowUncovered": true,                  optional: do not stop when caption blocks (or a block nobody could place)
                                               have no erase zone (a hand check)
-     "allowResidue": true,                    optional: do not stop when old outlined caption letters are left on the plate
+     "allowResidue": true,                    optional: do not stop when old letters are left on the plate (any of the
+                                              stops of residue_stops below)
+     "zoneResidueFrames": 15,                 optional: frames of residue that stop a job in a non-caption zone (below)
      "onDone": {field: value},                extra record fields to set after success (e.g. a status), optional
      "onFail": {field: value},                extra record fields to set after a failure, optional
      "gz": "…"}                               optional: base64 gzip of a JSON object merged into the spec (an inline spec
@@ -183,6 +185,34 @@ def parse_check(text):
     return {'residue': res, 'offText': int(off.group(1)) if off else 0}
 
 
+ZONE_RESIDUE_FRAMES = 15     # 0.5 s at 30 fps
+
+
+def residue_stop(chk, zone_frames=ZONE_RESIDUE_FRAMES):
+    """The reason «check plate» stops the job (parse_check output -> error text), or None = deliver.
+    - outlined caption letters (mode cap) are found by their own shape, so one still found on the plate is an old
+      word left: any frame stops;
+    - a text erased with one mask for all of its time (mode still, the legal line): its letters still standing out of
+      the plate on 3 or more of the sampled frames where they stood out of the source;
+    - any other zone (top-hat modes light / dark / both: a headline, a hook card, a call to action) in `zone_frames`
+      or more frames of one zone. This check also fires on textured ground, so a few frames stay a note: on the jobs
+      replayed when the stop was added, clean plates had at most 8 frames in a zone and the plates that kept a
+      half-erased headline or an old line under the new one had 17 to 370."""
+    res = chk['residue']
+    left = [r for r in res if r[1] == 'cap']
+    if left:
+        return f'old caption letters left on the plate in {sum(r[4] for r in left)} frames (first at {min(r[2] for r in left):.2f} s)'
+    left = [r for r in res if r[1] == 'still' and r[4] >= 3]
+    if left:
+        return f'old letters of a line that stays through the video are left on the plate in {sum(r[4] for r in left)} sampled frames'
+    left = [r for r in res if r[1] not in ('cap', 'still') and r[4] >= zone_frames]
+    if left:
+        w = max(left, key=lambda r: r[4])
+        return (f'old letters left on the plate outside the captions: {len(left)} zone(s), the worst zone {w[0]} ({w[1]}, '
+                f'{w[2]:.2f}-{w[3]:.2f} s) in {w[4]} frames, worst frame at {w[5]:.2f} s')
+    return None
+
+
 def main():
     global LOG
     ap = argparse.ArgumentParser()
@@ -262,16 +292,11 @@ def main():
         run([sys.executable, f'{ENGINE}/plate.py', f'{W}/ov.zones.json', src, f'{W}/plate.mp4', '--check', str(spec.get('check', 40))])
         LOG.flush(); chk = parse_check(log_from(f'{W}/log.txt', mark))
         say(f'check: {len(chk["residue"])} zones with residue, blur off the text in {chk["offText"]} frames')
-        # outlined caption letters are found by their own shape, so one still found on the plate is an old word left:
-        # a hard stop (the top-hat zones' residue above stays a note: it also fires on textured ground)
-        left = [r for r in chk['residue'] if r[1] == 'cap']
-        if left and not spec.get('allowResidue'):
-            raise RuntimeError(f'old caption letters left on the plate in {sum(r[4] for r in left)} frames (first at {min(r[2] for r in left):.2f} s)')
-        # the same for a text erased with one mask for all of its time (the legal line): its letters still standing out
-        # of the plate on 3 or more of the sampled frames where they stood out of the source
-        left = [r for r in chk['residue'] if r[1] == 'still' and r[4] >= 3]
-        if left and not spec.get('allowResidue'):
-            raise RuntimeError(f'old letters of a line that stays through the video are left on the plate in {sum(r[4] for r in left)} sampled frames')
+        # old letters left on the plate stop the job before any file is made (residue_stop: captions, still texts and,
+        # from 15 frames in one zone, headlines / hook cards / calls to action)
+        why = residue_stop(chk, int(spec.get('zoneResidueFrames', ZONE_RESIDUE_FRAMES)))
+        if why and not spec.get('allowResidue'):
+            raise RuntimeError(why)
 
         if a.plate_only:
             step(f'done (plate only): {W}/plate.mp4'); return

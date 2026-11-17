@@ -73,10 +73,14 @@ A job that would leave old words on screen stops with an error instead of delive
   outlined glyph left whole inside a source caption line on 2 or more sampled frames (`captions.left_glyphs`: what a
   line search on the plate cannot see), or the letters of a `still` text still standing out on 3 or more sampled
   frames.
-The top-hat zones' residue (`plate.py --check`) stays a note in the job record: it also fires on textured ground.
+- **letters left outside the captions**, after «check plate»: a top-hat zone (a headline, a hook card, a call to
+  action) whose old letters stand out of the plate in 15 or more frames (`residue_stop`; spec `zoneResidueFrames`).
+  Fewer frames stay a note in the job record, since this check also fires on textured ground: when the stop was added,
+  clean plates had at most 8 frames in a zone and plates that kept a half-erased headline had 17 to 370.
 A spec may set `allowUncovered` / `allowResidue` for a hand check.
 Not caught yet: a caption page of one letter, or one that no still of the caller shows and that is much larger than
-the others; leftover letters of a headline or a call to action (a note only).
+the others; a text that slides in (its zone does not follow it, so the old words show for a frame or two); a
+box-style caption whose rect starts late after a cut (rect zones are not checked on the plate).
 
 ## Composite without an alpha video (difference matting)
 The overlay-only render body is rendered twice, over solid black (B) and solid white (W). Per channel
