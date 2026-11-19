@@ -37,10 +37,11 @@ RUN_KEYS = ('state', 'run', 'at', 'secs', 'step', 'error', 'why', 'out', 'sheet'
 
 class Field:
     """One long-text JSON field of one record, addressed by field id (survives a field rename)."""
-    def __init__(self, base, table, rec, field):
+    def __init__(self, base, table, rec, field, run_keys=RUN_KEYS):
         self.url = f'https://api.airtable.com/v0/{base}/{table}/{rec}'
         self.h = {'Authorization': 'Bearer ' + os.environ['AIRTABLE_TOKEN']}
         self.field = field
+        self.run_keys = run_keys      # the keys a new run drops (static_job.py has its own)
 
     def read(self):
         f = http('GET', self.url + '?returnFieldsByFieldId=true', headers=self.h).get('fields', {})
@@ -49,7 +50,7 @@ class Field:
 
     def write(self, upd, fresh=False):
         o = self.read()
-        if fresh: o = {k: v for k, v in o.items() if k not in RUN_KEYS}
+        if fresh: o = {k: v for k, v in o.items() if k not in self.run_keys}
         o.update(upd)
         http('PATCH', self.url, {'fields': {self.field: json.dumps(o, ensure_ascii=False, indent=1)}}, headers=self.h)
         return o
