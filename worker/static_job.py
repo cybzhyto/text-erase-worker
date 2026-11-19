@@ -65,15 +65,25 @@ def fal(model, body, limit=600):
 def read(job, url):
     """The vision read of one hosted image -> dict (raises when the answer is not one JSON object)."""
     r = job['read']
-    ans = fal('openrouter/router/vision', {'model': r['model'], 'prompt': r['prompt'], 'image_urls': [url],
-                                          'temperature': 0, 'max_tokens': int(r.get('maxTokens') or 3000)}, limit=300)
-    text = str(ans.get('output') or '')
-    try:
-        o = json.loads(text[text.index('{'):text.rindex('}') + 1])
-    except ValueError:
-        raise RuntimeError('the vision read is not JSON') from None
-    if not isinstance(o, dict): raise RuntimeError('the vision read is not one JSON object')
+    # reasoning: some models refuse a call with it switched off («Reasoning is mandatory for this endpoint», 2026-11-19)
+    ans = fal('openrouter/router/vision', {'model': r['model'], 'prompt': r['prompt'], 'image_urls': [url], 'temperature': 0,
+                                          'reasoning': bool(r.get('reasoning', True)),
+                                          'max_tokens': int(r.get('maxTokens') or 6000)}, limit=300)
+    o = last_object(str(ans.get('output') or ''), r.get('keys') or ('cta', 'price_tags'))
+    if o is None: raise RuntimeError('the vision read has no JSON answer')
     return o
+
+
+def last_object(text, keys):
+    """The last JSON object in the text that has one of `keys` (an answer may come after reasoning that holds braces)."""
+    dec, best = json.JSONDecoder(), None
+    for i in [k for k, ch in enumerate(text) if ch == '{']:
+        try:
+            o, _ = dec.raw_decode(text, i)
+        except ValueError:
+            continue
+        if isinstance(o, dict) and any(k in o for k in keys): best = o
+    return best
 
 
 def load(path):

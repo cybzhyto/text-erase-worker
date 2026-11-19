@@ -7,7 +7,9 @@ import cv2
 import numpy as np
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'engine'))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'worker'))
 import staticfix as sf
+import static_job
 
 W, H = 540, 960
 
@@ -128,6 +130,13 @@ class Qa(unittest.TestCase):
         self.assertFalse(sf.qa(rd('SEE MORE NOW'), WANT, fixes)[0])
         self.assertFalse(sf.qa(rd(None), WANT, fixes)[0])                    # the call to action vanished
         self.assertFalse(sf.qa(rd(tags=1), WANT, fixes)[0])                  # a label survived
+
+
+class Answer(unittest.TestCase):
+    def test_last_object_after_reasoning(self):
+        t = 'Looking at {the button} ... {"a": 1}\n```json\n{"cta": {"text": "X", "box": [1, 2, 3, 4]}, "price_tags": []}\n```'
+        self.assertEqual(static_job.last_object(t, ('cta', 'price_tags')), {'cta': {'text': 'X', 'box': [1, 2, 3, 4]}, 'price_tags': []})
+        self.assertIsNone(static_job.last_object('no answer {"a": 1}', ('cta', 'price_tags')))
 
 
 if __name__ == '__main__':
