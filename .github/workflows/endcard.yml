@@ -40,8 +40,12 @@ jobs:
           python-version: '3.13'
           cache: pip
       - name: tools
+        timeout-minutes: 6
+        env:
+          DEBIAN_FRONTEND: noninteractive
         run: |
-          command -v ffmpeg >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends ffmpeg >/dev/null; }
+          if command -v ffmpeg >/dev/null; then echo "ffmpeg preinstalled"; else
+            sudo -E apt-get update -qq && sudo -E apt-get install -y -qq --no-install-recommends ffmpeg </dev/null >/dev/null; echo "ffmpeg installed"; fi
           pip install -q numpy==2.5.3
       - name: secrets present
         env:
