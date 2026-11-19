@@ -121,7 +121,8 @@ def fix(job, img, fixes, W, H, work, louder, hosted):
     e = job['edit']; out = img; metrics = []
     for k, f in enumerate(fixes):
         if f['kind'] == 'cta':
-            prompt = e['cta'].format(old=f['old'], new=f['new'], shape=f['shape'] or 'button', colour=f['colour'] or 'the same colour as the old label')
+            prompt = e['cta'].format(old=f['old'], new=f['new'], shape=f['shape'] or 'button', colour=f['colour'] or 'the same colour as the old label',
+                                     fill=f.get('fill') or 'a colour that stands out clearly from the picture behind the words')
             boxes, regions = [f['box']], [{'box': f['box'], 'pad': f['pad']}]
         else:
             prompt = e['tags']
@@ -193,7 +194,7 @@ def main():
                 op = save(out, alpha, f'{W_}/out{n}.' + ('jpg' if mime == 'image/jpeg' else 'png'), mime)
                 url = hosted(op, f'out{n}.' + ('jpg' if mime == 'image/jpeg' else 'png'), mime)
                 r1 = read(job, url)
-                ok, why = sf.qa(r1, job['want'], fixes)
+                ok, why = sf.qa(r1, job['want'], fixes, out)
                 res.update({'readAfter': r1, 'metrics': metrics, 'qa': {'ok': ok, 'why': why}})
                 say('check passed' if ok else f'check failed: {len(why)} issue(s)')
                 if ok: break
