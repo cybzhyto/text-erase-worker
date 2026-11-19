@@ -60,6 +60,8 @@ class EndCard(unittest.TestCase):
         self.assertEqual(i['kind'], 'card')
         self.assertAlmostEqual(i['cut_at'], 6.0, delta=0.1)
         self.assertAlmostEqual(i['card_s'], 4.0, delta=0.15)
+        self.assertEqual(i['cut_frame'], 6 * RATE)                              # a frame number: the first card frame
+        self.assertAlmostEqual(i['cut_at'], i['cut_frame'] / RATE, places=3)
 
     def test_no_card(self):
         self.assertEqual(ec.find_cut(self.none)['kind'], 'none')
@@ -80,6 +82,8 @@ class EndCard(unittest.TestCase):
         self.assertLessEqual(abs(o['dur'] - src['dur']), 1.5 / RATE + 0.05)
         self.assertTrue(o['audio'])
         self.assertGreater(r['held_s'], 0.9)                                  # slot 4 s, card 3 s
+        self.assertLess(max(r['checks']['cardDiff']), 1.0)                    # frame-exact: the card is not one frame off
+        self.assertLess(r['checks']['keepDiff'], 3.0)                         # the last kept frame is the scene
         ok, _ = ec.matches(out, self.card, ec.find_cut(out))                  # the output now ends on the new card
         self.assertTrue(ok)
         self.assertTrue(os.path.exists(ec.sheet(out, r['cut_at'], f'{self.d}/sheet.jpg')))
