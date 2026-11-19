@@ -132,6 +132,22 @@ class Qa(unittest.TestCase):
         self.assertFalse(sf.qa(rd(tags=1), WANT, fixes)[0])                  # a label survived
 
 
+class Contrast(unittest.TestCase):
+    def test_words_that_sink_into_the_ground_fail(self):
+        img = np.zeros((200, 600, 3), np.uint8); img[:] = (10, 20, 60)              # a navy page
+        good, bad = img.copy(), img.copy()
+        cv2.putText(good, 'SEE MORE', (60, 130), cv2.FONT_HERSHEY_SIMPLEX, 2.4, (255, 255, 255), 8)
+        cv2.putText(bad, 'SEE MORE', (60, 130), cv2.FONT_HERSHEY_SIMPLEX, 2.4, (30, 50, 120), 8)   # dark blue on navy
+        box = [40, 50, 560, 160]
+        self.assertGreater(sf.contrast(good, box), 10)
+        self.assertLess(sf.contrast(bad, box), sf.MIN_CONTRAST)
+        fixes = sf.plan(rd('BUY TODAY', shape='rect'), WANT, 600, 200)
+        r = rd(); r['cta']['box'] = [round(40 / 0.6), 250, round(560 / 0.6), 800]
+        self.assertEqual(sf.qa(r, WANT, fixes, good), (True, []))
+        ok, why = sf.qa(r, WANT, fixes, bad)
+        self.assertFalse(ok); self.assertIn('stand out', why[0])
+
+
 class Answer(unittest.TestCase):
     def test_last_object_after_reasoning(self):
         t = 'Looking at {the button} ... {"a": 1}\n```json\n{"cta": {"text": "X", "box": [1, 2, 3, 4]}, "price_tags": []}\n```'

@@ -23,6 +23,8 @@ PAD_CTA = 20                   # px round a call-to-action box (vision boxes sit
 PAD_TAG = 80                   # px round a price label: its pointer dot / line sits 60-70 px outside the label box
 MIN_ECC = 0.80                 # alignment of the model's output to the original (correlation, outside the regions)
 MAX_DRIFT = 20.0               # mean abs difference (0-255) outside the regions after alignment
+MIN_CONTRAST = 3.0             # new call-to-action words vs the ground right behind them (WCAG ratio; large text AA = 3).
+                               # Measured 2026-11-19: approved fixes 3.8-16, dark-blue words left on a navy page 1.4
 
 
 def to_px(box, W, H):
@@ -128,7 +130,8 @@ def plan(read, want, W, H):
         if c.get('underline'): why.append('underline')
         if why:
             fixes.append({'kind': 'cta', 'box': to_px(c['box'], W, H), 'pad': PAD_CTA, 'old': str(c.get('text') or ''),
-                          'new': new, 'shape': str(c.get('shape') or ''), 'colour': str(c.get('colour') or ''), 'why': why})
+                          'new': new, 'shape': str(c.get('shape') or ''), 'colour': str(c.get('colour') or ''),
+                          'fill': str(c.get('fill') or ''), 'why': why})
     tags = [t for t in (read.get('price_tags') or []) if t.get('box')]
     if (want or {}).get('prices') == 'remove' and tags:
         fixes.append({'kind': 'tags', 'boxes': [to_px(t['box'], W, H) for t in tags], 'pad': PAD_TAG, 'n': len(tags),
@@ -136,8 +139,29 @@ def plan(read, want, W, H):
     return fixes
 
 
-def qa(read, want, fixes):
-    """The read of the fixed image: every fix took and nothing it touched came back. Returns (ok, why)."""
+def _lum(rgb):
+    c = np.asarray(rgb, np.float64) / 255.0
+    c = np.where(c <= 0.03928, c / 12.92, ((c + 0.055) / 1.055) ** 2.4)
+    return 0.2126 * c[..., 0] + 0.7152 * c[..., 1] + 0.0722 * c[..., 2]
+
+
+def contrast(img, box):
+    """Contrast ratio (WCAG, 1-21) of the two tones inside a box: Otsu splits letters from ground, the ratio is taken
+    between the two classes' mean colours. Words that sink into the ground score under MIN_CONTRAST."""
+    x0, y0, x1, y1 = box
+    a = img[y0:y1, x0:x1]
+    if a.size == 0: return 1.0
+    g = cv2.cvtColor(a, cv2.COLOR_RGB2GRAY)
+    t, _ = cv2.threshold(g, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    m = g > t
+    if m.sum() < 20 or (~m).sum() < 20: return 1.0
+    l1, l2 = float(_lum(a[m].mean(0))), float(_lum(a[~m].mean(0)))
+    return round((max(l1, l2) + 0.05) / (min(l1, l2) + 0.05), 2)
+
+
+def qa(read, want, fixes, img=None):
+    """The read of the fixed image (and the image itself, for the measured checks): every fix took and nothing it
+    touched came back. Returns (ok, why)."""
     read = read or {}
     bad = []
     for f in fixes:
@@ -149,6 +173,9 @@ def qa(read, want, fixes):
                 if str(c.get('shape') or 'none') not in SHAPES_OK: bad.append('shape ' + str(c.get('shape')))
                 if c.get('arrow'): bad.append('arrow')
                 if c.get('underline'): bad.append('underline')
+                if img is not None and c.get('box'):
+                    k = contrast(img, to_px(c['box'], img.shape[1], img.shape[0]))
+                    if k < MIN_CONTRAST: bad.append(f'the words hardly stand out (contrast {k} < {MIN_CONTRAST})')
         if f['kind'] == 'tags' and (read.get('price_tags') or []):
             bad.append(f'{len(read["price_tags"])} price label(s) left')
     return not bad, bad
