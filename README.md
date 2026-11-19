@@ -100,6 +100,7 @@ come from the same page.
 | `engine/measure.py`, `segs.py`, `track.py`, `splice.py` | zone measuring, a tracked moving element, re-made frame ranges |
 | `worker/run_job.py` | one job end to end (spec contract in its docstring) |
 | `engine/endcard.py`, `worker/endcard_job.py` | a second job: a dark end card at the end of a video → a new card (below) |
+| `engine/staticfix.py`, `worker/static_job.py` | a third job: a still image read, fixed in regions, checked (below) |
 | `tests/` | unit tests on drawn frames, no media: `python -m unittest discover -s tests` (workflow `test.yml`, no secrets) |
 
 ## Layers in the cfg: name them, don't number them
@@ -190,6 +191,24 @@ file kept. ffmpeg + numpy only, no generated pixels, no renders.
   source (≤ 6); three frames of the slot equal the new card (≤ 5). A contact sheet goes with the result for a look.
 - **Contract:** inputs = record, base, table and the id of one long-text field holding the job JSON
   (`{v: 1, src, card, …}`); the answer is merged into the same JSON (`worker/endcard_job.py` docstring).
+
+## Static image fixes (`engine/staticfix.py`, workflow `static.yml`)
+A third job: a still ad image is read by a vision model and, when it breaks the caller's wants, only the regions that
+must change are redrawn by an image-edit model and pasted back. Model ids and prompts come with the job (none here).
+- **Read:** the caller's prompt answers one JSON object: the call to action (words, box in thousandths, shape, arrow,
+  underline, letter colour), price labels (boxes), language. `plan()` turns it into fixes: words ≠ the wanted ones, any
+  shape behind them, an arrow or an underline → `cta`; labels when the job says `prices: remove` → `tags`. None → `current`.
+- **Edit:** per fix kind one crop round its boxes (+140 px, widened to the nearest ratio the model draws) goes to the
+  edit model with the caller's prompt.
+- **Paste:** the model's crop is resized, aligned to the original by ECC (affine, on everything outside the padded
+  boxes) and taken only inside each padded box (call to action 20 px, label 80 px: its pointer dot sits 60–70 px out),
+  feathered inside the box. Every pixel outside the boxes is the original's. The whole box is taken, not a diff mask:
+  a white label on a white wall and a thin pointer line stay under any difference threshold. ECC < 0.80 or a mean
+  difference > 20 outside the boxes = the model moved the picture → that try fails.
+- **Check:** the result is hosted and read again with the same prompt; every fix must hold (`qa()`: the wanted words,
+  no shape, no arrow, no underline, no label left, the call to action still there). Two tries per job, the second with
+  the caller's `louder` sentence; then `failed`. Output in the source's format (png keeps its alpha, jpeg at q95).
+- **Contract:** the same as the end-card job (ids only; the answer merged into the job JSON, `worker/static_job.py`).
 
 ## Privacy (this repository is public)
 Only code lives here: no media, no job data, no URLs, no texts. Jobs reach the runner as a record id; the worker reads
