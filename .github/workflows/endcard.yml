@@ -1,0 +1,66 @@
+# One end-card job: worker/endcard_job.py on one record field (inputs = ids only; the video and card links come from the
+# field, read with the repository secrets). Started by the caller's automation through the API (workflow_dispatch needs a
+# token with Actions: write on this repository, so nobody else can start it).
+#
+# This repository is public, and so are its Actions logs. Same rules as erase.yml:
+# - inputs are ids only (they show in the run name and in the step env header);
+# - the worker prints step names, counts and timings only;
+# - no artifacts: the result is uploaded to the caller's hosting with a secret;
+# - no pull_request / pull_request_target triggers, so a fork can never run a workflow with these secrets.
+name: endcard
+run-name: endcard ${{ inputs.job }}
+on:
+  workflow_dispatch:
+    inputs:
+      job:
+        description: record id (rec…)
+        required: true
+      base:
+        description: base id (app…)
+        required: true
+      table:
+        description: table id (tbl…)
+        required: true
+      field:
+        description: field id of the job JSON (fld…)
+        required: true
+permissions:
+  contents: read
+concurrency:
+  group: endcard-${{ inputs.job }}
+  cancel-in-progress: false
+jobs:
+  endcard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+          cache: pip
+      - name: tools
+        timeout-minutes: 6
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          if command -v ffmpeg >/dev/null; then echo "ffmpeg preinstalled"; else
+            sudo -E apt-get update -qq && sudo -E apt-get install -y -qq --no-install-recommends ffmpeg </dev/null >/dev/null; echo "ffmpeg installed"; fi
+          pip install -q numpy==2.5.3
+      - name: secrets present
+        env:
+          AIRTABLE_TOKEN: ${{ secrets.AIRTABLE_TOKEN }}
+          FAL_KEY: ${{ secrets.FAL_KEY }}
+        run: |
+          miss=""; for k in AIRTABLE_TOKEN FAL_KEY; do [ -n "${!k}" ] || miss="$miss $k"; done
+          if [ -n "$miss" ]; then echo "::error::missing repository secret(s):$miss"; exit 1; fi
+          echo "all secrets set"
+      - name: run job
+        env:
+          JOB: ${{ inputs.job }}
+          BASE: ${{ inputs.base }}
+          TABLE: ${{ inputs.table }}
+          FIELD: ${{ inputs.field }}
+          AIRTABLE_TOKEN: ${{ secrets.AIRTABLE_TOKEN }}
+          FAL_KEY: ${{ secrets.FAL_KEY }}
+        run: python3 worker/endcard_job.py --job "$JOB" --base "$BASE" --table "$TABLE" --field "$FIELD" --work "$RUNNER_TEMP/endcard"

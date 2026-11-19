@@ -15,5 +15,13 @@ jobs:
         with:
           python-version: '3.13'
           cache: pip
+      - name: ffmpeg
+        timeout-minutes: 6
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          if command -v ffmpeg >/dev/null; then echo "ffmpeg preinstalled"; else
+            sudo -E apt-get update -qq && sudo -E apt-get install -y -qq --no-install-recommends ffmpeg </dev/null >/dev/null; echo "ffmpeg installed"; fi
+          ffmpeg -hide_banner -version | head -1
       - run: pip install -q -r requirements.txt
       - run: python -m unittest discover -s tests -v

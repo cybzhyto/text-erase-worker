@@ -99,6 +99,7 @@ come from the same page.
 | `engine/composite.py` | plate + B / W overlay renders (+ local caption pages) → final mp4, audio from B |
 | `engine/measure.py`, `segs.py`, `track.py`, `splice.py` | zone measuring, a tracked moving element, re-made frame ranges |
 | `worker/run_job.py` | one job end to end (spec contract in its docstring) |
+| `engine/endcard.py`, `worker/endcard_job.py` | a second job: a dark end card at the end of a video → a new card (below) |
 | `tests/` | unit tests on drawn frames, no media: `python -m unittest discover -s tests` (workflow `test.yml`, no secrets) |
 
 ## Layers in the cfg: name them, don't number them
@@ -173,6 +174,23 @@ stills, shot changes, what the build covers) gets its cfg measured on the source
   `cfg.auto.unplaced` and the job stops.
 A `cfg` next to `auto` is laid over the measured cfg key by key (a hand override).
 
+## End-card swap (`engine/endcard.py`, workflow `endcard.yml`)
+A separate job on the same runner: the old end card of a finished video is replaced with a new card, the rest of the
+file kept. ffmpeg + numpy only, no generated pixels, no renders.
+- **Find:** the end card is the run of dark frames (mean grey < 0.20 and 90th percentile < 0.30 at 54×96) that reaches
+  the end of the file, 1–9.5 s long; the cut is walked back over the cross-fade into the card. No dark tail → `none`;
+  a dark tail longer than a card or a whole dark file → `refused` (nothing is written).
+- **Already new:** three frames of the tail (from 1.6 s on, where cards differ most) are compared with the new card,
+  ±0.6 s around the same offset; a mean abs diff ≤ 5 of 255 everywhere → `current`. Two cards that share a ground and a
+  logo differ by 12–24 there, a re-encoded copy of the same card by 0.5–3.
+- **Swap:** the source up to the cut + the new card scaled into the source frame for exactly the old card's length
+  (its last frame held when the slot is longer); audio copied bit for bit; crf 17 (20, 23 when the file would pass
+  95 MiB, the hosting's one-PUT limit).
+- **Checks** (any fails → `failed`, nothing hosted): duration within 1.5 frames; the frame before the cut equals the
+  source (≤ 6); three frames of the slot equal the new card (≤ 5). A contact sheet goes with the result for a look.
+- **Contract:** inputs = record, base, table and the id of one long-text field holding the job JSON
+  (`{v: 1, src, card, …}`); the answer is merged into the same JSON (`worker/endcard_job.py` docstring).
+
 ## Privacy (this repository is public)
 Only code lives here: no media, no job data, no URLs, no texts. Jobs reach the runner as a record id; the worker reads
 the job with repository secrets and prints step names, counts and timings only. No artifacts are uploaded.
@@ -182,4 +200,5 @@ the job with repository secrets and prints step names, counts and timings only. 
 pip install -r requirements.txt   # + ffmpeg
 python3 worker/run_job.py --spec spec.json --work /tmp/erase --plate-only     # plate + check, no renders
 CREATOMATE_API_KEY=… python3 worker/run_job.py --spec spec.json --work /tmp/erase   # full, output in /tmp/erase/out.mp4
+python3 engine/endcard.py swap SRC.mp4 CARD.mp4 OUT.mp4 SHEET.jpg              # end-card swap, local files
 ```
