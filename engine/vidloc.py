@@ -42,6 +42,8 @@ RESIDUE = 6       # frames with old letters left that stop a block (of ~145)
 SHRINK = 0.72     # smallest size a long line may be drawn at, as a share of the measured size
 FAMILY_SLACK = 1.5  # a block takes its class's lead family when that scores within this factor of its own best
 EASE = 0.92       # a longer translation is first drawn smaller down to this share to stay within the old block's width + 10 %
+SQUEEZE = 0.6     # narrowest horizontal scale: old words narrower than every family we have (a condensed display serif) are matched
+                  # by drawing the closest family squeezed to their width per letter (2026-11-24: a 1.37-1.6x wider serif failed)
 FONTS = {   # Google Fonts per class, with the static weights used; the closest family + weight to the old words is picked
     'sans': {'Inter': [400, 500, 600, 700], 'DM Sans': [400, 500, 600, 700], 'Montserrat': [400, 500, 600, 700]},
     'serif': {'Playfair Display': [400, 500, 600, 700], 'Instrument Serif': [400], 'DM Serif Display': [400],
@@ -256,6 +258,19 @@ def draw_line(d, xy, text, font, fill, anchor, track=0):
         d.text((x, xy[1]), c, font=font, fill=fill, anchor='l' + anchor[1]); x += font.getlength(c) + track
 
 
+def draw_squeezed(img, xy, text, font, fill, anchor, xs, bold=0):
+    """A line drawn at the font's size (bold = a stroke of the letter colour) and squeezed to xs of its width, placed like
+    draw_line ('mm' centre / 'lm' left)."""
+    adv = font.getlength(text); pad = int(font.size)
+    w, h = int(adv) + 2 * pad, int(font.size * 2) + 2 * pad
+    tmp = Image.new('RGBA', (w, h), (0, 0, 0, 0))
+    ImageDraw.Draw(tmp).text((w / 2, h / 2), text, font=font, fill=fill, anchor='mm', stroke_width=bold, stroke_fill=fill)
+    tmp = tmp.resize((max(1, int(round(w * xs))), h), Image.LANCZOS)
+    x = xy[0] - tmp.width / 2 if anchor[0] == 'm' else xy[0] - (w / 2 - adv / 2) * xs
+    full = Image.new('RGBA', img.size, (0, 0, 0, 0)); full.paste(tmp, (int(round(x)), int(round(xy[1] - h / 2))), tmp)
+    img.alpha_composite(full)
+
+
 def room(med, M, line, H, W):
     """Width available to a line: the run of background colour on its middle row around the letters when it is a container (a
     button, a plain panel: the run reaches at least a third of the line's height past the letters on both sides); over a photo the
@@ -385,8 +400,28 @@ def main():
         f = ImageFont.truetype(font_file(fam, wt), int(round(size)))
         spread = [(mw_ - glyphs(f, s_)[2]) / max(1, len(s_) - 1) for s_, _, mw_, _ in ms if len(s_) > 3 and mw_ > glyphs(f, s_)[2] * 1.12]
         track = float(np.median(spread)) if len(spread) * 2 > len(ms) else 0.0
+        # squeeze: the old letters are narrower than the family draws them at their height (a condensed face we do not have)
+        narrow = [mw_ / max(1, glyphs(f, s_)[2]) for s_, _, mw_, _ in ms if len(s_) > 3]
+        xs = 1.0 if track or not narrow or float(np.median(narrow)) >= 0.9 else max(SQUEEZE, float(np.median(narrow)))
+        # weight: a family lighter than the old letters (ink share = mass / box, as in the font score) is drawn with a stroke of
+        # the letter colour, up to 3 % of the size (Instrument Serif 400 against a semibold condensed serif, 2026-11-24)
+        def share(sw):
+            sh = []
+            for s_, _, _, _ in ms:
+                if len(s_) <= 3: continue
+                im_ = Image.new('L', (int(f.getlength(s_)) + 40 + 4 * sw, int(f.size * 2) + 40), 0)
+                ImageDraw.Draw(im_).text((20 + 2 * sw, 20), s_, font=f, fill=255, stroke_width=sw, stroke_fill=255)
+                A_ = np.asarray(im_) / 255.0; ys_, xs_ = np.nonzero(A_ >= 0.5)
+                if len(xs_): sh.append(A_.sum() / ((np.ptp(ys_) + 1) * (np.ptp(xs_) + 1)))
+            return float(np.median(sh)) if sh else 0.0
+        want = float(np.median([sh_ for s_, _, _, sh_ in ms if len(s_) > 3] or [0])); bold = 0
+        if want and share(0) < 0.85 * want:
+            for sw in range(1, max(1, int(0.03 * size)) + 1):
+                bold = sw
+                if share(sw) >= 0.92 * want: break
         # room per line, placement
-        centred = len(L) == 1 or np.ptp([(q[0] + q[2]) / 2 for q in L]) <= np.ptp([q[0] for q in L])   # else left-aligned
+        # else left-aligned; lines of one width are both, and an end card's are centred far more often (2026-11-24, 1630)
+        centred = len(L) == 1 or np.ptp([(q[0] + q[2]) / 2 for q in L]) <= np.ptp([q[0] for q in L]) + 0.01 * W
         cx = float(np.mean([(q[0] + q[2]) / 2 for q in L])); lx = min(q[0] for q in L)
         rooms = [room(medb, M, q, H, W) for q in L]
         avail = min(R - Lx for Lx, R in rooms) + 1
@@ -399,7 +434,8 @@ def main():
             sz_ = size
             while True:
                 f_ = ImageFont.truetype(font_file(fam, wt), int(round(sz_)))
-                wd = max(ink_box(f_, t_, track * sz_ / size)[2] - ink_box(f_, t_, track * sz_ / size)[0] for t_ in lines_)
+                wd = xs * (max(ink_box(f_, t_, track * sz_ / size)[2] - ink_box(f_, t_, track * sz_ / size)[0] for t_ in lines_)
+                           + 2 * bold * sz_ / size)
                 # first keep the block's look: as wide as the old words + 10 %, down to EASE of the size; then the room, down to lo
                 if wd <= maxw and (wd <= pref or sz_ <= size * EASE): return sz_, f_, wd
                 if sz_ <= size * lo: return sz_, f_, wd
@@ -417,10 +453,10 @@ def main():
                     f_ = ImageFont.truetype(font_file(fam, wt), int(round(sz_try))); out_, cur = [], ''
                     for w_ in words:
                         t_ = (cur + ' ' + w_).strip()
-                        if cur and ink_box(f_, t_)[2] - ink_box(f_, t_)[0] > maxw: out_.append(cur); cur = w_
+                        if cur and xs * (ink_box(f_, t_)[2] - ink_box(f_, t_)[0]) > maxw: out_.append(cur); cur = w_
                         else: cur = t_
                     out_.append(cur)
-                    if len(out_) <= nl and max(ink_box(f_, t_)[2] - ink_box(f_, t_)[0] for t_ in out_) <= maxw: break
+                    if len(out_) <= nl and xs * max(ink_box(f_, t_)[2] - ink_box(f_, t_)[0] for t_ in out_) <= maxw: break
                     sz_try -= 1
                 else: continue
                 pt = (pitch or sz_try * 1.25) * sz_try / size; mid = (L[0][1] + L[-1][3]) / 2
@@ -429,9 +465,9 @@ def main():
                          and not (max(q[2] for q in L) < o['rect'][0] or min(q[0] for q in L) > o['rect'][2])]
                 if top >= 0.01 * H and bot <= 0.99 * H and not clash:
                     new, sz, f, rewrapped = out_, sz_try, f_, True
-                    widest = max(ink_box(f_, t_)[2] - ink_box(f_, t_)[0] for t_ in out_); pitch = pt * size / sz_try; break
+                    widest = xs * max(ink_box(f_, t_)[2] - ink_box(f_, t_)[0] for t_ in out_); pitch = pt * size / sz_try; break
         if widest > maxw: stop(f'block {b["key"]}: the new words are {widest}px wide, the room is {int(maxw)}px even at {int(sz)}px')
-        tr = track * sz / size
+        tr = track * sz / size; bk = int(round(bold * sz / size))
         if len(new) == len(L) and not rewrapped:
             ycs = [(q[1] + q[3]) / 2 for q in L]
         else:
@@ -440,11 +476,12 @@ def main():
         rgb = tuple(inf['color']) + (255,)
         lay, dd = (layer, d) if not ang else (lambda im: (im, ImageDraw.Draw(im)))(Image.new('RGBA', (W, H), (0, 0, 0, 0)))
         for s_, yc in zip(new, ycs):
-            draw_line(dd, (cx if centred else lx, yc), s_, f, rgb, 'mm' if centred else 'lm', tr)
+            if xs < 1 or bold: draw_squeezed(lay, (cx if centred else lx, yc), s_, f, rgb, 'mm' if centred else 'lm', xs, bk)
+            else: draw_line(dd, (cx if centred else lx, yc), s_, f, rgb, 'mm' if centred else 'lm', tr)
         if ang:
             back = cv2.warpAffine(np.asarray(lay), cv2.invertAffineTransform(Rm), (W, H), flags=cv2.INTER_LINEAR)
             layer.alpha_composite(Image.fromarray(back, 'RGBA'))
-        inf.update(font=f'{fam}:{wt}', size=int(round(sz)), measured=round(size, 1), track=round(tr, 2), maxw=int(maxw), widest=int(widest),
+        inf.update(font=f'{fam}:{wt}', size=int(round(sz)), measured=round(size, 1), track=round(tr, 2), squeeze=round(xs, 2), bold=bk, maxw=int(maxw), widest=int(widest),
                    old=old, new=new, rewrapped=rewrapped)
 
     A = np.asarray(layer).astype(np.float32); al = A[..., 3:4] / 255.0; bgr = A[..., [2, 1, 0]]

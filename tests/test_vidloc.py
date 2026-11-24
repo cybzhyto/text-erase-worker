@@ -71,3 +71,20 @@ class Measure(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class Squeeze(unittest.TestCase):
+    def test_squeezed_line_keeps_its_centre_and_height(self):
+        from PIL import Image, ImageFont
+        f = ImageFont.load_default(size=40) if hasattr(ImageFont, 'load_default') else None
+        if f is None or not hasattr(f, 'getlength'): self.skipTest('no scalable default font')
+        def ink(xs, anchor='mm'):
+            im = Image.new('RGBA', (600, 120), (0, 0, 0, 0))
+            V.draw_squeezed(im, (300, 60), 'SLOW FALL DAYS', f, (255, 255, 255, 255), anchor, xs)
+            a = np.asarray(im)[..., 3]; ys, xs_ = np.nonzero(a > 127)
+            return xs_.min(), xs_.max(), ys.max() - ys.min()
+        x0, x1, h = ink(1.0); s0, s1, sh = ink(0.65)
+        self.assertAlmostEqual((s1 - s0) / (x1 - x0), 0.65, delta=0.04)
+        self.assertAlmostEqual((s0 + s1) / 2, (x0 + x1) / 2, delta=3)      # 'mm' stays centred
+        self.assertLessEqual(abs(sh - h), 2)                                # the height is kept
+        l0, _, _ = ink(0.65, 'lm'); self.assertAlmostEqual(l0, 300, delta=4)  # 'lm' starts at x
