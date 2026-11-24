@@ -28,7 +28,9 @@ concurrency:
   cancel-in-progress: false
 jobs:
   loc:
-    runs-on: ubuntu-latest
+    # pinned (2026-11-24): ubuntu-latest became 26.04, which Playwright 1.57 does not support (job 1 failed «chromium could not
+    # be installed» in 2 s); 24.04 is what the cloud sessions that proved the smoke tests run
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
@@ -60,8 +62,9 @@ jobs:
         # the smoke tests drive Chromium through Playwright (pinned; the browser and its system libraries come with it)
         timeout-minutes: 8
         run: |
-          npm install --no-save --no-audit --no-fund --silent playwright@1.57.0 >/dev/null 2>&1
-          timeout 420 npx --no-install playwright install --with-deps chromium >/dev/null 2>&1 || { echo "::error::chromium could not be installed"; exit 1; }
+          npm install --no-save --no-audit --no-fund --silent playwright@1.63.0 >"$RUNNER_TEMP/pw.log" 2>&1 || { tail -n 20 "$RUNNER_TEMP/pw.log"; echo "::error::playwright could not be installed"; exit 1; }
+          # Playwright's own output only (its CDN and apt lines; no job data), shown when the install fails
+          timeout 420 npx --no-install playwright install --with-deps chromium >>"$RUNNER_TEMP/pw.log" 2>&1 || { tail -n 20 "$RUNNER_TEMP/pw.log"; echo "::error::chromium could not be installed"; exit 1; }
           echo "chromium installed"
       - name: secrets present
         env:
@@ -72,6 +75,7 @@ jobs:
           if [ -n "$miss" ]; then echo "::error::missing repository secret(s):$miss"; exit 1; fi
           echo "all secrets set"
       - name: run job
+        id: run
         env:
           JOB: ${{ inputs.job }}
           BASE: ${{ inputs.base }}
@@ -79,3 +83,13 @@ jobs:
           AIRTABLE_TOKEN: ${{ secrets.AIRTABLE_TOKEN }}
           FAL_KEY: ${{ secrets.FAL_KEY }}
         run: python3 worker/loc_job.py --job "$JOB" --base "$BASE" --table "$TABLE" --work "$RUNNER_TEMP/loc"
+      - name: setup failed
+        # a failure before «run job» (tools, browser, secrets) is written to the job at once with its onFail re-queue, so the
+        # Lab job does not sit «Handed over» until the 60-min stale guard of ATO · lab handover sync
+        if: failure() && steps.run.outcome == 'skipped'
+        env:
+          JOB: ${{ inputs.job }}
+          BASE: ${{ inputs.base }}
+          TABLE: ${{ inputs.table }}
+          AIRTABLE_TOKEN: ${{ secrets.AIRTABLE_TOKEN }}
+        run: python3 worker/loc_job.py --job "$JOB" --base "$BASE" --table "$TABLE" --setup-failed

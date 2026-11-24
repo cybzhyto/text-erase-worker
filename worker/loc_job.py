@@ -144,7 +144,16 @@ def main():
     for k in ID: ap.add_argument('--' + k)
     ap.add_argument('--spec')
     ap.add_argument('--work', default=os.environ.get('RUNNER_TEMP', '/tmp') + '/loc')
+    ap.add_argument('--setup-failed', action='store_true', help='the workflow failed before the job ran: write that and re-queue')
     a = ap.parse_args()
+    if a.setup_failed:
+        for k, rx in ID.items():
+            if not re.fullmatch(rx, getattr(a, k) or ''): sys.exit(f'bad --{k}')
+        rec = Rec(a.base, a.table, a.job)
+        job = rec.options().get('locPlay') or {}
+        rec.patch_loc({'state': 'failed', 'run': os.environ.get('GITHUB_RUN_ID'), 'step': 'setup',
+                       'error': 'the worker could not set up its tools (see the GitHub Actions run)'}, fresh=True, extra=job.get('onFail'))
+        print('setup failure written'); return
     os.makedirs(a.work, exist_ok=True); W = a.work
     run_job.LOG = open(os.path.join(W, 'log.txt'), 'a')
     rec = None
