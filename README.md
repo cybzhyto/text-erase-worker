@@ -210,6 +210,34 @@ must change are redrawn by an image-edit model and pasted back. Model ids and pr
   the caller's `louder` sentence; then `failed`. Output in the source's format (png keeps its alpha, jpeg at q95).
 - **Contract:** the same as the end-card job (ids only; the answer merged into the job JSON, `worker/static_job.py`).
 
+## Playable localization (`engine/vidloc.py`, `worker/loc_job.py`, workflow `loc.yml`)
+A fourth job, in stages the caller drives (it writes `Options.locPlay` and starts the run; the answer comes back in the
+same block, `worker/loc_job.py` docstring):
+- **test:** a playable the caller localized (words in its settings JSON) is played in Chromium on 5 screens by the smoke
+  test of its mechanic (`playable/smoke/<mechanic>.js`, copied from the caller's repository by its sync script), the
+  source first, then the localized file. It passes when every check the source passes also passes on the localized
+  file; a check the source already fails is listed, not held against it. Passed → the localized file is delivered.
+- **frame:** a looping end-card video (an inline `data:video/mp4` source, an AI interactive's `videoSrc` or a link): the
+  median of 24 frames spread over it is hosted for the caller's read (the words stand still, what moves blurs out).
+- **build:** `vidloc.py` with the caller's plan (blocks: rect, old lines, new lines, font class, letter side):
+  - *letters* per block: black-hat / top-hat over the rect widened by a third of a line (an ascender on a tight box's
+    edge), kept where static in half the frames; components on the wider box's edge, centred outside the read's box,
+    taller than 1.6 lines or long thin rules are dropped. The measure mask also drops components far from the words'
+    own brightness (a rug fleck at luma 140 beside letters at 235) and specks more than a fifth of a line from any
+    letter-sized component; the erase mask keeps them (they are filled from their own surroundings);
+  - *erase*: push-pull fill of every frame (real pixels only); *residue check*: the old letters' shape must not stand
+    out of the filled frame more than the pixels around them do (a photo's texture answers inside and outside alike);
+  - *new words*: lines from the row profile (split at its lowest rows near each expected break when the leading is
+    tight); a slanted block (a hand-written note) is measured and drawn level, then turned back; family, weight and
+    size from each line's coverage (height of the >= 0.5 box → size, drawn width and ink share → family and weight),
+    one family + weight per role (three icon labels), the class's lead family where it scores close; a longer
+    translation eases down to 92 % of the size to keep the old block's width, then to 72 % within the room (a button
+    or a plain panel; over a photo the room is the frame); fine print re-wraps into up to two more lines when it fits
+    nowhere else and stays off other blocks; colour = the old letters' median;
+  - *page*: the mp4 inline, muted / playsinline / loop, MRAID ready + viewable, a tap → `mraid.open(clickUrl)`; then
+    the video smoke test on 5 screens. Stops (`failed`, nothing hosted): no letters in a rect, old letters left in 6+
+    frames, words that do not fit, a failed smoke check.
+
 ## Privacy (this repository is public)
 Only code lives here: no media, no job data, no URLs, no texts. Jobs reach the runner as a record id; the worker reads
 the job with repository secrets and prints step names, counts and timings only. No artifacts are uploaded.
@@ -220,4 +248,6 @@ pip install -r requirements.txt   # + ffmpeg
 python3 worker/run_job.py --spec spec.json --work /tmp/erase --plate-only     # plate + check, no renders
 CREATOMATE_API_KEY=… python3 worker/run_job.py --spec spec.json --work /tmp/erase   # full, output in /tmp/erase/out.mp4
 python3 engine/endcard.py swap SRC.mp4 CARD.mp4 OUT.mp4 SHEET.jpg              # end-card swap, local files
+python3 engine/vidloc.py PLAN.json SRC.mp4 /tmp/loc                              # end-card video localized (+ ffmpeg)
+python3 worker/loc_job.py --spec job.json --work /tmp/loc                         # a loc stage, local files (+ node, playwright)
 ```
