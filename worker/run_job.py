@@ -201,7 +201,9 @@ def residue_stop(chk, zone_frames=ZONE_RESIDUE_FRAMES):
     res = chk['residue']
     left = [r for r in res if r[1] == 'cap']
     if left:
-        return f'old caption letters left on the plate in {sum(r[4] for r in left)} frames (first at {min(r[2] for r in left):.2f} s)'
+        # the worst frame, not the zone's start: «first at 1.20 s» sent the 911 look to the wrong second (2026-11-25)
+        w = max(left, key=lambda r: r[6])
+        return f'old caption letters left on the plate in {sum(r[4] for r in left)} frames (worst at {w[5]:.2f} s)'
     left = [r for r in res if r[1] == 'still' and r[4] >= 3]
     if left:
         return f'old letters of a line that stays through the video are left on the plate in {sum(r[4] for r in left)} sampled frames'

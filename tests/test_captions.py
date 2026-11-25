@@ -252,6 +252,24 @@ class LeftGlyphs(unittest.TestCase):
         fw, _ = draw(ground('white'), 'WHERE IS THE KEY?')
         self.assertEqual(captions.left_glyphs(fw, gap, ch), [])
 
+    def test_a_card_corner_behind_the_line_is_not_a_left_glyph(self):
+        # Lab 911 (1843 → es, 2026-11-25): white corners of the outfit cards behind «EVERY ONE UNDER THIRTY», cut off by a
+        # letter's outline on one side and by the grid on the others (ring 0.40-0.42 on the source), ringed by the patch's
+        # soft edge on the plate, sat on the line: the check stopped the job though nothing of the words was left.
+        g = np.full((H, W, 3), 150, np.uint8)                                              # the grid: gray, not dark
+        f, bb = draw(g, 'WHERE IS THE KEY?', shadow=None)
+        ch = captions.find(f, 0)['cap_h']; L = captions.find(f, ch)['lines'][0]; top, xa = L[1] + round(0.45 * ch), bb[2] + 4
+        def corner(img, edge):                                                             # dark on the left + top, grid on the right + bottom
+            out = img.copy(); out[top - 6:top + 58, xa - 6:xa + 24] = edge; out[top:top + 58, xa:xa + 24] = 250
+            out[top + 58:top + 64, xa - 6:xa + 30] = 150; out[top - 6:top + 64, xa + 24:xa + 30] = 150
+            return out
+        src, plate = corner(f, 6), corner(g, 110)                                          # source: a letter's outline; plate: the patch
+        isl, _ = captions.islands(plate)
+        self.assertTrue(any(q[0] >= xa - 1 and 0.4 <= q[5] < captions.RING_IN for q in isl))   # letter sized, ringed, on the line
+        self.assertEqual(captions.left_glyphs(src, plate, ch), [])
+        whole = g.copy(); x0 = bb[2] - int(0.6 * ch); whole[:, x0:] = f[:, x0:]             # the «?» itself left: still found
+        self.assertTrue(captions.left_glyphs(corner(f, 6), corner(whole, 110), ch))
+
 class Fill(unittest.TestCase):
     def test_a_hole_wider_than_the_pyramid_reaches_is_not_black(self):
         I = np.full((420, 900, 3), 120, np.float32); Wt = np.ones((420, 900), np.float32); Wt[60:360, 60:840] = 0
