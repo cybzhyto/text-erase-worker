@@ -119,16 +119,27 @@ def left_glyphs(src, plate, cap_h, colors=()):
     lines on the plate does not see it. -> [[x0, y0, x1, y1, area]] in crop pixels."""
     r = find(src, cap_h, colors)
     if not r['lines']: return []
-    cap_h = r['cap_h']; isl, _ = islands(plate, colors); out = []
+    cap_h = r['cap_h']; isl, lab = islands(plate, colors); out = []
+    letter = lambda q: q[5] >= 0.4 and 0.45 * cap_h <= q[3] - q[1] <= 1.3 * cap_h and q[2] - q[0] <= 1.3 * cap_h
+    sl = None
     for q in isl:
-        h, w = q[3] - q[1], q[2] - q[0]
         # its ring is often part gone (the fill of the letter next to it took some of the outline): 0.4 of it dark is enough
-        if q[5] < 0.4 or not 0.45 * cap_h <= h <= 1.3 * cap_h or w > 1.3 * cap_h: continue
+        if not letter(q): continue
         cx = (q[0] + q[2]) / 2; m = round(0.45 * cap_h)
         # in the line, and standing on it as a glyph does: its top at the capitals' top or its foot on the base line
         # (a white gap between two dark things of an app page's picture is ringed and letter sized too, but sits anywhere)
-        if any(L[0] - 0.25 * cap_h <= cx <= L[2] + 0.25 * cap_h and (abs(q[1] - (L[1] + m)) <= 0.2 * cap_h or abs(q[3] - (L[3] - m)) <= 0.2 * cap_h)
-               for L in r['lines']): out.append(q[:5])
+        if not any(L[0] - 0.25 * cap_h <= cx <= L[2] + 0.25 * cap_h and (abs(q[1] - (L[1] + m)) <= 0.2 * cap_h or abs(q[3] - (L[3] - m)) <= 0.2 * cap_h)
+                   for L in r['lines']): continue
+        # and a glyph of the SOURCE: most of it (0.6) lies in one letter-sized island of the source crop whose ring is an
+        # outline (dark share >= RING_IN; the source's letters ring 0.99-1.0). A white corner of a card of the picture
+        # behind the line, cut off by a letter's outline on one side only, rings 0.40-0.42 there, and the patch's soft edge
+        # rings it on the plate (2026-11-25, Lab 911, 1843 → es at 34.7-35.0 s: the outfit-card grid behind «EVERY ONE
+        # UNDER THIRTY» stopped the job with nothing left of the words).
+        if sl is None:
+            si, slab = islands(src, colors); sl = (slab, {k[6] for k in si if letter(k) and k[5] >= RING_IN})
+        ids, n = np.unique(sl[0][lab == q[6]], return_counts=True)
+        if max([c for i, c in zip(ids, n) if i in sl[1]] or [0]) < 0.6 * q[4]: continue
+        out.append(q[:5])
     return out
 
 

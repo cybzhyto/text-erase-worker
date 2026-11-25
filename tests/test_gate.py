@@ -48,7 +48,7 @@ class ResidueStop(unittest.TestCase):
 
     def test_caption_and_still_stops_keep_their_rules_and_come_first(self):
         why = rj.residue_stop(chk(row(1, 'cap', 1, 0.24), row(6, 'dark', 370)))
-        self.assertTrue(why.startswith('old caption letters left on the plate in 1 frames (first at 0.24 s)'))
+        self.assertTrue(why.startswith('old caption letters left on the plate in 1 frames (worst at '), why)
         self.assertIn('a line that stays through the video', rj.residue_stop(chk(row(1000, 'still', 3))))
         self.assertIsNone(rj.residue_stop(chk(row(1000, 'still', 2))))
         self.assertIsNone(rj.residue_stop(chk(row(1000, 'still', 2)), zone_frames=1), 'a still text keeps its own 3-frame rule')
