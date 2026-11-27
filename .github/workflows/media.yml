@@ -1,0 +1,81 @@
+# One media job: worker/media_job.py on one key of one record field (inputs = ids only; the job body and its source links
+# come from the field, read with the repository secrets). Today: the audio mix of the caller's localization recipe (its
+# fitted dub), made here instead of in Creatomate's one-render-at-a-time queue. Started by the caller's automation through
+# the API (workflow_dispatch needs a token with Actions: write on this repository, so nobody else can start it).
+#
+# This repository is public, and so are its Actions logs. Same rules as erase.yml:
+# - inputs are ids only (they show in the run name and in the step env header);
+# - the worker prints step names, counts and timings only;
+# - no artifacts: the result is uploaded to the caller's hosting with a secret;
+# - no pull_request / pull_request_target triggers, so a fork can never run a workflow with these secrets.
+name: media
+run-name: media ${{ inputs.key }} ${{ inputs.job }}
+on:
+  workflow_dispatch:
+    inputs:
+      job:
+        description: record id (rec…)
+        required: true
+      base:
+        description: base id (app…)
+        required: true
+      table:
+        description: table id (tbl…)
+        required: true
+      field:
+        description: field id of the JSON that holds the job (fld…)
+        required: true
+      key:
+        description: the job's key in that JSON (e.g. mix)
+        required: true
+permissions:
+  contents: read
+concurrency:
+  group: media-${{ inputs.job }}-${{ inputs.key }}
+  cancel-in-progress: false
+jobs:
+  media:
+    # pinned like loc.yml: ffmpeg 6.1 from this image's apt (amix normalize=0, adelay in samples)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+          cache: pip
+      - name: tools
+        # same apt guard as endcard.yml (2026-11-19: a stalled `apt-get update` killed a job before it wrote its state)
+        timeout-minutes: 9
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          apt_ffmpeg() {
+            local o="-o Acquire::Retries=3 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20"
+            sudo DEBIAN_FRONTEND=noninteractive timeout 60 apt-get $o install -y -qq --no-install-recommends ffmpeg </dev/null >/dev/null 2>&1 && return 0
+            sudo DEBIAN_FRONTEND=noninteractive timeout 60 apt-get $o update -qq </dev/null >/dev/null 2>&1
+            sudo DEBIAN_FRONTEND=noninteractive timeout 90 apt-get $o install -y -qq --no-install-recommends ffmpeg </dev/null >/dev/null 2>&1
+          }
+          if command -v ffmpeg >/dev/null; then echo "ffmpeg preinstalled"; else
+            for k in 1 2; do apt_ffmpeg && break; echo "apt try $k failed"; sleep 5; done
+            command -v ffmpeg >/dev/null || { echo "::error::ffmpeg could not be installed"; exit 1; }
+            echo "ffmpeg installed"; fi
+          pip install -q numpy==2.5.3
+      - name: secrets present
+        env:
+          AIRTABLE_TOKEN: ${{ secrets.AIRTABLE_TOKEN }}
+          FAL_KEY: ${{ secrets.FAL_KEY }}
+        run: |
+          miss=""; for k in AIRTABLE_TOKEN FAL_KEY; do [ -n "${!k}" ] || miss="$miss $k"; done
+          if [ -n "$miss" ]; then echo "::error::missing repository secret(s):$miss"; exit 1; fi
+          echo "all secrets set"
+      - name: run job
+        env:
+          JOB: ${{ inputs.job }}
+          BASE: ${{ inputs.base }}
+          TABLE: ${{ inputs.table }}
+          FIELD: ${{ inputs.field }}
+          KEY: ${{ inputs.key }}
+          AIRTABLE_TOKEN: ${{ secrets.AIRTABLE_TOKEN }}
+          FAL_KEY: ${{ secrets.FAL_KEY }}
+        run: python3 worker/media_job.py --job "$JOB" --base "$BASE" --table "$TABLE" --field "$FIELD" --key "$KEY" --work "$RUNNER_TEMP/media"

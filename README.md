@@ -101,6 +101,7 @@ come from the same page.
 | `worker/run_job.py` | one job end to end (spec contract in its docstring) |
 | `engine/endcard.py`, `worker/endcard_job.py` | a second job: a dark end card at the end of a video → a new card (below) |
 | `engine/staticfix.py`, `worker/static_job.py` | a third job: a still image read, fixed in regions, checked (below) |
+| `engine/audiomix.py`, `worker/media_job.py` | a media job off Creatomate's queue: a Creatomate audio body mixed with ffmpeg (below) |
 | `tests/` | unit tests on drawn frames, no media: `python -m unittest discover -s tests` (workflow `test.yml`, no secrets) |
 
 ## Layers in the cfg: name them, don't number them
@@ -238,6 +239,27 @@ same block, `worker/loc_job.py` docstring):
     the video smoke test on 5 screens. Stops (`failed`, nothing hosted): no letters in a rect, old letters left in 6+
     frames, words that do not fit, a failed smoke check.
 
+## Audio mix off Creatomate's queue (`engine/audiomix.py`, `worker/media_job.py`, workflow `media.yml`)
+Creatomate renders one file at a time for the whole account, so the caller's audio-only renders (the fitted dub's mix of
+its localization recipe: stems + one TTS clip per line) waited behind every other flow's videos: 17 of a run's 53 min
+on 2026-11-27. This job makes the same mix from the same body in about a minute on this runner, ffmpeg + numpy only.
+- **Body:** the JSON the caller would send to Creatomate's `/v2/renders` (audio elements only), so Creatomate stays the
+  way back for any body. Keys and what they do: `engine/audiomix.py` docstring; anything else is `refused`.
+- **Same as Creatomate, measured** on a real body (a 77 s dub, 3 stereo stems at 55 % + 36 mono lines with trims and
+  fades) against Creatomate's own render of it: same length, lag 0 samples, RMS -21.00 vs -21.01 dB, 100 ms envelope
+  correlation 1.0000; per line, 31 of 34 within -55 dB of Creatomate's (the codec's noise), 2 one sample apart. The one
+  rule the match needed: a **mono source plays at -3 dB in each channel** (Creatomate's lines came out at 0.706 of
+  unity while its stereo bed matched to 1.000).
+- **Output:** WAV, 48 kHz, stereo, 16 bit; the sum is made in float and scaled down to -0.2 dBFS only when it would clip
+  (`gainDb` says how much); the caller normalizes loudness afterwards.
+- **Safety:** sources are fetched over https from the caller's providers only (`media_job.HOSTS`), ≤ 200 MiB each; each
+  file's container is read from its first bytes and opened with that demuxer named (a playlist dressed as an mp3 is
+  refused before ffmpeg sees it); ffmpeg and curl run without the job's tokens.
+- **Contract:** inputs = record, base, table, field id and key of the job inside that field's JSON (`{v: 1, kind: "mix",
+  body, state: "sent", nonce}`); the answer goes into the same object: `running` → `done` (`out` = hosted WAV) /
+  `refused` (`why`) / `failed` (`step`, `error`), with `ran` = the nonce it answers. A job not in state `sent` is left
+  alone. Details in the `worker/media_job.py` docstring.
+
 ## Privacy (this repository is public)
 Only code lives here: no media, no job data, no URLs, no texts. Jobs reach the runner as a record id; the worker reads
 the job with repository secrets and prints step names, counts and timings only. No artifacts are uploaded.
@@ -250,4 +272,5 @@ CREATOMATE_API_KEY=… python3 worker/run_job.py --spec spec.json --work /tmp/er
 python3 engine/endcard.py swap SRC.mp4 CARD.mp4 OUT.mp4 SHEET.jpg              # end-card swap, local files
 python3 engine/vidloc.py PLAN.json SRC.mp4 /tmp/loc                              # end-card video localized (+ ffmpeg)
 python3 worker/loc_job.py --spec job.json --work /tmp/loc                         # a loc stage, local files (+ node, playwright)
+python3 worker/media_job.py --body BODY.json --work /tmp/media --out /tmp/mix.wav  # an audio mix (downloads its sources)
 ```
