@@ -101,7 +101,7 @@ come from the same page.
 | `worker/run_job.py` | one job end to end (spec contract in its docstring) |
 | `engine/endcard.py`, `worker/endcard_job.py` | a second job: a dark end card at the end of a video → a new card (below) |
 | `engine/staticfix.py`, `worker/static_job.py` | a third job: a still image read, fixed in regions, checked (below) |
-| `engine/audiomix.py`, `worker/media_job.py` | a media job off Creatomate's queue: a Creatomate audio body mixed with ffmpeg (below) |
+| `engine/audiomix.py`, `engine/stills.py`, `worker/media_job.py` | media jobs off Creatomate's queue: a Creatomate audio body mixed, or a batch of audio / still bodies, with ffmpeg (below) |
 | `tests/` | unit tests on drawn frames, no media: `python -m unittest discover -s tests` (workflow `test.yml`, no secrets) |
 
 ## Layers in the cfg: name them, don't number them
@@ -260,6 +260,20 @@ on 2026-11-27. This job makes the same mix from the same body in about a minute 
   `refused` (`why`) / `failed` (`step`, `error`), with `ran` = the nonce it answers. A job not in state `sent` is left
   alone. Details in the `worker/media_job.py` docstring.
 
+### Stills and batches (`engine/stills.py`, job kind `batch`, 2026-11-27)
+The same recipe asks Creatomate for ~25 still images per run (16 source frames for its text read, contact sheets of up to
+32 tiles for its colour and pixel checks, 9 frames of the finished video for QA) and one voice sample per speaker: each
+one a slot in the same one-file queue. A `batch` job takes up to 40 bodies at once (`items: [{k, body}]`, audio bodies →
+WAV, still bodies → their jpg / png), downloads every source once and answers `outs: [{k, out, …}]` in the items' order;
+one body the engines refuse makes the whole batch `refused` before anything is downloaded.
+- **Same as Creatomate, measured** on the 15 stills of one real run (8 full-frame jpg, 7 png sheets of 1-27 tiles from 3
+  videos): mean difference 0.35-1.18 levels per image, 1.72 on the worst 270 x 480 tile. The rules the match needed: the
+  frame shown is the **first one at or after** the moment (20.17 s at 30 fps = frame 606), tiles are scaled with the
+  **area** filter in **BT.601** colours, empty sheet cells are **opaque black**, png is RGBA. Keys: `engine/stills.py`
+  docstring; anything else (images, text, other fits, sizes in %) is `refused`.
+- **Speed:** the 15 stills render in ~35 s on 2 cores (each source decoded from its nearest keyframe, 4 frames at a
+  time); the answer drops the job's bodies from the field (they are its bulk; the field holds 100k).
+
 ## Privacy (this repository is public)
 Only code lives here: no media, no job data, no URLs, no texts. Jobs reach the runner as a record id; the worker reads
 the job with repository secrets and prints step names, counts and timings only. No artifacts are uploaded.
@@ -273,4 +287,5 @@ python3 engine/endcard.py swap SRC.mp4 CARD.mp4 OUT.mp4 SHEET.jpg              #
 python3 engine/vidloc.py PLAN.json SRC.mp4 /tmp/loc                              # end-card video localized (+ ffmpeg)
 python3 worker/loc_job.py --spec job.json --work /tmp/loc                         # a loc stage, local files (+ node, playwright)
 python3 worker/media_job.py --body BODY.json --work /tmp/media --out /tmp/mix.wav  # an audio mix (downloads its sources)
+python3 worker/media_job.py --body JOB.json --files MAP.json --work /tmp/media      # a batch {kind: batch, items}, local files
 ```
