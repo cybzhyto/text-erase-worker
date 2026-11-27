@@ -144,9 +144,10 @@ class AudioMix(unittest.TestCase):
 
     def test_hosts(self):
         import media_job
-        for h in ('v3b.fal.media', 'fal.media', 'v3.fal.media', 'f002.backblazeb2.com'):
+        for h in ('v3b.fal.media', 'fal.media', 'v3.fal.media', 'f002.backblazeb2.com', 'd2h7xmz5gqybh9.cloudfront.net'):
             self.assertTrue(media_job.HOSTS.fullmatch(h), h)
-        for h in ('evil.com', 'fal.media.evil.com', 'localhost', '169.254.169.254', 'backblazeb2.com.example'):
+        for h in ('evil.com', 'fal.media.evil.com', 'localhost', '169.254.169.254', 'backblazeb2.com.example', 'cloudfront.net',
+                  'evil.cloudfront.net', 'd2h7xmz5gqybh9.cloudfront.net.evil.com', 'xd2h7xmz5gqybh9.cloudfront.net'):
             self.assertFalse(media_job.HOSTS.fullmatch(h), h)
 
 

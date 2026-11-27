@@ -1,6 +1,7 @@
 # One media job: worker/media_job.py on one key of one record field (inputs = ids only; the job body and its source links
-# come from the field, read with the repository secrets). Today: the audio mix of the caller's localization recipe (its
-# fitted dub), made here instead of in Creatomate's one-render-at-a-time queue. Started by the caller's automation through
+# come from the field, read with the repository secrets): the audio mix of the caller's localization recipe (its fitted
+# dub) and batches of its audio / still renders (voice samples, source stills, contact sheets, QA frames), made here instead
+# of in Creatomate's one-render-at-a-time queue. Started by the caller's automation through
 # the API (workflow_dispatch needs a token with Actions: write on this repository, so nobody else can start it).
 #
 # This repository is public, and so are its Actions logs. Same rules as erase.yml:
