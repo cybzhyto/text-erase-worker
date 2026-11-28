@@ -381,14 +381,19 @@ print('dropped bands (track, time, dur):', dropped)
 #   build of the same video may place things differently (2026-11-13: one build lifted a price tag off the old legal line
 #   and drew a new one; the next kept the original tag as source pixels, which also carry the old letters crossing it).
 #   Such a build does not fit the cfg: stop here instead of delivering the old text.
+#   The texts erased with one mask for all their time (cfg «still»: the legal line) and the outlined-caption bands (mode
+#   cap) count too when measured here: only the letters inside are filled, but a kept layer over them brings those back
+#   (the same day: the legal line under that tape for all of the tape's 36.9 s). Written for another build, they stay
+#   out of the check, as before.
 FR = float(rb.get('frame_rate') or 30)
+ERASED = [(z, own) for z, own in zip(Z, ZK) if own or z[6] != 'cap'] + \
+         [([t, t + d] + px(*g['rect_pct']) + ['still'], True) for g in cfg.get('still', []) if 'still' in MEAS for t, d in g['times']]
 clash, cut = [], {}
 for i, e in enumerate(keep):
     if not (e.get('name') or '').startswith('orig ') or e.get('type') != 'composition': continue
     ox0, oy0, ox1, oy1 = px(*orig_rect(e)); t0, t1 = float(e['time']), float(e['time']) + float(e['duration'])
     area = max(1, (ox1 - ox0) * (oy1 - oy0))
-    for z, own in zip(Z, ZK):
-        if z[6] == 'cap': continue                  # a caption band: only letters found in it are touched, not the rect
+    for z, own in ERASED:
         iw, ih = min(ox1, z[4]) - max(ox0, z[2]), min(oy1, z[5]) - max(oy0, z[3])
         if iw <= 0 or ih <= 0: continue
         if own:

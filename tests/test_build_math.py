@@ -131,6 +131,18 @@ class KeptLayersOverZones(unittest.TestCase):
         for e in kept(out['black']):
             for z in out['zones']: self.assertFalse(covers(e, z))
 
+    def test_a_measured_still_text_under_a_kept_layer_cuts_it_for_the_still_s_time(self):
+        # the legal line, erased with one letter mask for its whole time (cfg «still»), ran across the tape's rows: the
+        # kept tape brought the old line back over the plate for as long as the tape showed
+        legal = {'role': 'disclaimer', 'rect_pct': [9.81, 79.74, 90.0, 83.7], 'times': [[0.0, 9.0]], 'k': 15, 'thr': 40, 'lmin': 150, 'grow': 4}
+        code, log, out = build(body(TAPE), dict(CFG, still=[legal], _measured=['caption_rects', 'still']))
+        self.assertEqual(code, 0, log)
+        self.assertEqual(kept(out['black']), [], 'the line runs under the tape for all of its time')
+        # a hand-written still stays out of the check, as before: the tape is cut by the measured plates only
+        code, log, out = build(body(TAPE), dict(CFG, still=[legal], _measured=['caption_rects']))
+        self.assertEqual(code, 0, log)
+        self.assertEqual(len(kept(out['black'])), 3)
+
     def test_orig_span_keeps_the_build_layout_only(self):
         e = orig_span(TAPE, 3.0, 5.5)
         self.assertEqual((e['time'], e['duration']), (3.0, 2.5))
