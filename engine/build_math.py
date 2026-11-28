@@ -2,7 +2,7 @@
 usage: python3 build_math.py RB.json SRC_URL OUT_PREFIX CFG.json
  -> OUT_PREFIX.black.json / .white.json (overlay over solid black / white) + OUT_PREFIX.zones.json"""
 import json, re, sys
-from layers import orig_rect
+from layers import orig_rect, orig_span
 rb = json.load(open(sys.argv[1])); SRC = sys.argv[2]; OUT = sys.argv[3]
 els = rb['elements']; D = rb['duration']
 cfg = json.load(open(sys.argv[4])) if len(sys.argv) > 4 else {}
@@ -146,6 +146,12 @@ for e in els:
 W_, H_ = rb['width'], rb['height']
 def px(x0, y0, x1, y1): return [round(x0 * W_ / 100), round(y0 * H_ / 100), round(x1 * W_ / 100), round(y1 * H_ / 100)]
 Z = []      # erase zones: [t0, t1, x0, y0, x1, y1 (px), mode, k, thr, grow]
+# where each zone comes from, in step with Z: True = every cfg key that placed it was measured on THIS build (run_job
+# writes cfg «_measured» = the keys auto_zones.py gave that the caller did not override; a key the cfg leaves out uses
+# the code's default), False = a key written for another build or by hand. Read by the kept-layer check below.
+MEAS = set(cfg.get('_measured') or [])
+ZK = []
+def mark(*keys): ZK.extend([all(k in MEAS or k not in cfg for k in keys)] * (len(Z) - len(ZK)))
 PW = sorted((q['time'], q['time'] + q['duration']) for q in boxes)
 def split(t0, t1):
     cuts = sorted({t0, t1} | {x for a, c in PW for x in (a, c) if t0 < x < t1})
@@ -174,6 +180,7 @@ if cfg.get('caption_union'):
     for t0, t1, x0, y0, x1, y1 in OLD:
         for a, c, on in split(t0, t1):
             if not on and c - a >= 0.02: Z.append([a, c] + px(x0 - 0.6, y0 - 0.3, x1 + 0.6, y1 + 0.3) + ['full', 0, 0, 3])
+    mark('caption_rects', 'caption_union')
     TT = cfg.get('caption_text_track')
     for e in texts:
         if TT is None or e.get('track') != TT: continue
@@ -298,6 +305,7 @@ if CP:
         tall = (y0 < Y0 - 0.05 or y1 > Y1 + 0.05) and not any(ta - 0.01 <= t and t + d <= tb + 0.01 for ta, tb in covered)
         for a, c, on in split(t, t + d):
             if c - a >= 0.02 and (tall or not on): Z.append([a, c] + px(x0 - 0.6, y0 - 0.3, x1 + 0.6, y1 + 0.3) + ['full', 0, 0, 3])
+    mark('caption_rects', 'caption_pages')
     print('caption_pages:', len(P), 'pages, font %.2f vmin' % (fs / vmin), '| widest page %.1f %%' % (max(float(b['width'][:-1]) for b in newb)))
     for i, b in enumerate(newb[:200]): print('  %6.2f-%6.2f %-34s w %s h %s' % (b['time'], b['time'] + b['duration'], txt[i].replace(chr(10), ' / '), b['width'], b['height']))
 for tr_, keys in cfg.get('text_y_keys', {}).items():      # a text that rides a moving element
@@ -305,8 +313,10 @@ for tr_, keys in cfg.get('text_y_keys', {}).items():      # a text that rides a 
         if str(q.get('track')) == tr_:
             q['y'] = [{'time': round(t - float(q['time']), 3), 'value': f'{y:.2f}%'} for t, y in keys if float(q['time']) <= t <= float(q['time']) + float(q['duration'])]
 Z.extend(cfg.get('zones_px', []))      # explicit zones in px (e.g. a per-frame track of a moving button)
+mark('zones_px')
 for t, d, x0, y0, x1, y1, mode, k, thr, grow, *lmin in cfg.get('zones_extra', []):   # explicit zones, % of frame (+ optional lmin, static)
     Z.append([t, t + d] + px(x0, y0, x1, y1) + [mode, k, thr, grow] + lmin[:2])
+mark('zones_extra')
 for t, d, x0, y0, x1, y1, *k in ([] if cfg.get('caption_union') else cfg.get('caption_rects', [])):
     if CP and (CP.get('old_boxes', 'B') == 'all' or k == ['B']): continue          # caption_pages handled it
     if k == ['B']:
@@ -323,16 +333,21 @@ for t, d, x0, y0, x1, y1, *k in ([] if cfg.get('caption_union') else cfg.get('ca
         Z.append([t, t + d] + px(x0 - 0.6, y0 - 0.3, x1 + 0.6, y1 + 0.3) + ['exact', 0, 0, 3]); continue
     # a tall T rect is an old translucent plate with its text (segs.py): erase the plate too, not only the letters
     Z.append([t, t + d] + px(x0, y0, x1, y1) + (['full', 0, 0, 3] if (y1 - y0) > 7 else ['light', 25, 70, 4]))
+mark('caption_rects')
 for p in cfg.get('dark_patches', []):
     t, d, x0, y0, x1, y1 = p[:6]
     big = (y1 - y0) > 8                      # an end-card zone (TAP THE LINK + glow): thick strokes, soft halo
     Z.append([t, t + d] + px(x0, y0, x1, y1) + (['light', 61, 60, 16, 60] if big else ['light', 31, 70, 5]))   # end card: dark plain bg, so lmin 60 also catches the letters while they fade in
+mark('dark_patches')
 for p in cfg.get('light_patches', []):
     t, d, x0, y0, x1, y1 = p[:6]
     Z.append([t, t + d] + px(x0, y0, x1, y1) + ['dark', 31, 50, 3])
+mark('light_patches')
 DB = cfg.get('disc_box', [8.5, 79.8, 91.5, 83.7])
 for t, d, *_ in cfg.get('disc_segments', []):
     Z.append([t, t + d] + px(*DB) + ['light', 15, 70, 3])
+mark('disc_segments', 'disc_box')
+assert len(ZK) == len(Z)
 for t, d, x0, y0, x1, y1, col, fe in cfg.get('solid_patches', []):
     fills.append(dict(patch(t, d, x0, y0, x1, y1, feather=fe, radius='0.6 vmin'), fill_color=col))
 # box_style restyles a new box into a solid black one where an old black box ('B') is on screen, to cover it. An old
@@ -353,36 +368,71 @@ app = []
 print('dropped bands (track, time, dur):', dropped)
 
 
-# A cfg is measured on one build. The next build of the same video may place things differently (2026-11-13: one build
-# lifted a price tag off the old legal line and drew a new one; the next kept the original tag as source pixels, which
-# also carry the old letters crossing it). Source pixels kept on top of a zone the plate erases bring those letters
-# back, so such a build does not fit the cfg: stop here instead of delivering the old text.
-clash = []
-for e in keep:
+# Kept source layers against the erase zones. The Build keeps some of the source as «orig …» layers (a price tag, a card
+# kept as the original: LOC31) and this body lays them over the plate. Where such a layer covers a zone the plate erases,
+# it brings the old letters back. Two cases:
+# - a zone measured on THIS build (ZK: run_job › auto_zones.py) under a kept layer: the erase wins. auto_zones.py already
+#   cuts its text zones off the kept layers, but not the caption rects it measures frame by frame, and an old caption can
+#   run into a kept card's rows (2026-11-28: a two-line translucent plate over a promo tape across the frame that the Build
+#   kept for 36.9 s; the tape's rows held the plate's second line, and every one-line plate's bottom 54 px). The layer is
+#   left out for the zone's time (± 3 frames: a full zone is also erased 2 frames before and after it). Nothing of it is
+#   lost: outside the zones the plate is the source itself, and our boxes lie above kept layers anyway (body()).
+# - a zone written for another build (a hand cfg) over > 15 % of a kept layer. A cfg is measured on one build; the next
+#   build of the same video may place things differently (2026-11-13: one build lifted a price tag off the old legal line
+#   and drew a new one; the next kept the original tag as source pixels, which also carry the old letters crossing it).
+#   Such a build does not fit the cfg: stop here instead of delivering the old text.
+FR = float(rb.get('frame_rate') or 30)
+clash, cut = [], {}
+for i, e in enumerate(keep):
     if not (e.get('name') or '').startswith('orig ') or e.get('type') != 'composition': continue
     ox0, oy0, ox1, oy1 = px(*orig_rect(e)); t0, t1 = float(e['time']), float(e['time']) + float(e['duration'])
     area = max(1, (ox1 - ox0) * (oy1 - oy0))
-    for z in Z:
+    for z, own in zip(Z, ZK):
         if z[6] == 'cap': continue                  # a caption band: only letters found in it are touched, not the rect
-        if z[0] >= t1 - 0.05 or z[1] <= t0 + 0.05: continue
         iw, ih = min(ox1, z[4]) - max(ox0, z[2]), min(oy1, z[5]) - max(oy0, z[3])
-        if iw > 0 and ih > 0 and iw * ih / area > 0.15:
+        if iw <= 0 or ih <= 0: continue
+        if own:
+            a, b = max(t0, z[0] - 3 / FR), min(t1, z[1] + 3 / FR)
+            if b > a: cut.setdefault(i, []).append((a, b))
+            continue
+        if z[0] >= t1 - 0.05 or z[1] <= t0 + 0.05: continue
+        if iw * ih / area > 0.15:
             clash.append((e.get('name'), round(t0, 2), [ox0, oy0, ox1, oy1], z[:7]))
 if clash:
     for c in clash: print('clash: source pixels kept by', c[0], 'at', c[1], 's', c[2], 'cover the erase zone', c[3])
     n_layers = len({(c[0], c[1], tuple(c[2])) for c in clash})
     raise SystemExit(f'the cfg does not fit this build: {n_layers} kept source layer(s) cover zones the plate erases '
                      f'(the old letters would come back); measure the cfg on this build')
+if cut:
+    out = []
+    for i, e in enumerate(keep):
+        if i not in cut: out.append(e); continue
+        t0, t1 = float(e['time']), float(e['time']) + float(e['duration'])
+        off = []                                    # the zones' spans, merged (a gap under 0.1 s is left out too)
+        for a, b in sorted(cut[i]):
+            if off and a <= off[-1][1] + 0.1: off[-1][1] = max(off[-1][1], b)
+            else: off.append([a, b])
+        on = [(p, q) for p, q in zip([t0] + [b for a, b in off], [a for a, b in off] + [t1]) if q - p >= 0.05]
+        parts = [orig_span(e, p, q) for p, q in on]
+        if None in parts: parts = []                # a layout orig_span cannot cut in time: the layer is left out whole
+        out.extend(parts)
+        print(f'kept layer {e.get("name")} ({t0:.2f}-{t1:.2f} s) under {len(cut[i])} zone(s) measured on this build: left out '
+              f'over {[(round(a, 2), round(b, 2)) for a, b in off]}, kept over {[(round(p, 2), round(q, 2)) for p, q in on] if parts else []}')
+    keep[:] = out
 
 
 def body(bg):
     out_els = [e for e in keep if e.get('type') == 'audio']
     out_els.append({"type": "shape", "track": 2, "time": 0, "duration": D, "x": "50%", "y": "50%", "width": "100%",
                     "height": "100%", "path": "M 0 0 L 100 0 L 100 100 L 0 100 Z", "fill_color": bg})
+    # bottom to top: app bands, kept source layers, our fills and boxes, other kept shapes, texts. Kept source layers lie
+    # under our boxes as in the Build (its caption plate is drawn above the kept tags and cards): a kept layer above a box
+    # showed the old caption's plate and letters over the box's edge where the two met (2026-11-28)
+    orig = [k for k in keep if k.get('type') != 'audio' and (k.get('name') or '').startswith('orig ')]
     tr = 3
-    for e in app: out_els.append(dict(e, track=tr)); tr += 1
+    for e in app + orig: out_els.append(dict(e, track=tr)); tr += 1
     if fills + boxes: out_els.append({"type": "composition", "track": tr, "time": 0, "duration": D, "elements": fills + boxes}); tr += 1
-    for e in [k for k in keep if k.get('type') != 'audio'] + texts:
+    for e in [k for k in keep if k.get('type') != 'audio' and k not in orig] + texts:
         out_els.append(dict(e, track=tr)); tr += 1
     b = {k: v for k, v in rb.items() if k != 'elements'}; b['elements'] = out_els
     return b
