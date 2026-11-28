@@ -115,7 +115,8 @@ The same build drift can move what the new version keeps of the source (an «ori
 zone the plate erases, which would bring the old letters back: `build_math.py` stops then too («the cfg does not fit
 this build»), and the reason reaches the job's private error field. That stop is only for a cfg written for another
 build: `run_job.py` passes `_measured` (the cfg keys `auto_zones.py` measured on this build), and a kept layer under
-one of those zones is left out for the zone's time instead (± 3 frames), since the old letters must go and outside the
+one of those zones (the legal line's one letter mask and outlined-caption bands included) is left out for the zone's
+time instead (± 3 frames), since the old letters must go and outside the
 zones the plate is the source itself (2026-11-28: an old two-line caption plate ran into a kept promo tape's
 rows). Kept layers lie under our caption boxes, as in the Build.
 
