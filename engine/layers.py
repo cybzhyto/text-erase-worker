@@ -22,3 +22,32 @@ def orig_rect(e):
             if s.get('type') == 'composition': walk(s)
     walk(e)
     return [r['x'][0], r['y'][0], r['x'][1], r['y'][1]]
+
+
+def orig_span(e, a, b):
+    """The kept «orig …» layer e cut to [a, b) s (absolute times inside it): a copy that starts at a, shows the same source
+    frames e showed then (each video's trim_start moves by a - e.time) and ends at b. The Build makes every child start
+    with its layer and run as long; for any other layout (a child that starts later or runs shorter, a sped-up video)
+    the answer is None and the caller does without the layer."""
+    t, dur = float(e['time']), float(e['duration'])
+    o, d = round(a - t, 3), round(b - a, 3)
+    if not (0 <= o and d > 0 and a + d <= t + dur + 1e-6): return None
+    def walk(el):
+        out = dict(el)
+        if el is not e:
+            if float(el.get('time') or 0) != 0: return None
+            if 'duration' in el:
+                if abs(float(el['duration']) - dur) > 0.002: return None
+                out['duration'] = d
+        if el.get('type') == 'video':
+            if el.get('speed') not in (None, 1, '100%'): return None
+            out['trim_start'] = round(float(el.get('trim_start') or 0) + o, 3)
+            if 'trim_duration' in el: out['trim_duration'] = d
+        if 'elements' in el:
+            kids = [walk(c) for c in el['elements']]
+            if None in kids: return None
+            out['elements'] = kids
+        return out
+    r = walk(e)
+    if r is not None: r.update(time=round(a, 3), duration=d)
+    return r

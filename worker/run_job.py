@@ -258,7 +258,9 @@ def main():
             json.dump(auto, open(f'{W}/auto.json', 'w'))
             run([sys.executable, f'{ENGINE}/auto_zones.py', f'{W}/auto.json', f'{W}/rb.json', src, f'{W}/cfg.auto.json'])
             meas = json.load(open(f'{W}/cfg.auto.json'))
-            json.dump({**meas, **cfg}, open(f'{W}/cfg.json', 'w'))          # caller keys win (an explicit override)
+            # caller keys win (an explicit override); «_measured» names the keys measured on this build, so build_math.py
+            # tells its own zones (the erase wins over a kept source layer) from a cfg written for another build (stop)
+            json.dump({**meas, **cfg, '_measured': sorted(k for k in meas if k not in cfg)}, open(f'{W}/cfg.json', 'w'))
             say(f'{len(meas.get("zones_extra", []))} zones, {len(meas.get("caption_rects", []))} caption rects measured')
             # every caption block of the source must be under an erase for most of its time: a block the measure
             # missed keeps its old words under the new ones, so the job stops here instead of delivering that
